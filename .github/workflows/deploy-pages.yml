@@ -1,6 +1,6 @@
 # Deploys the Vite build to GitHub Pages on every push to main.
 # One-time setup (in the GitHub repo): Settings → Pages → Source: "GitHub Actions".
-# Site URL after deploy: https://sunilkjt.github.io/crypto/
+# Site URL after deploy: https://sunilkjt.github.io/crypto-paper/
 
 name: Deploy to GitHub Pages
 

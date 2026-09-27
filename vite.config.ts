@@ -4,9 +4,9 @@ import { defineConfig } from 'vitest/config'
 
 // https://vite.dev/config/
 export default defineConfig({
-  // GitHub Pages serves the repo at /crypto/ — assets must use that base.
-  // Local dev keeps "/" (GITHUB_PAGES is only set in the Pages workflow).
-  base: process.env.GITHUB_PAGES === "true" ? "/crypto/" : "/",
+  // GitHub Pages serves this repo at /crypto-paper/ — assets must use that
+  // base. Local dev keeps "/" (GITHUB_PAGES is only set in the workflow).
+  base: process.env.GITHUB_PAGES === "true" ? "/crypto-paper/" : "/",
   plugins: [react(), tailwindcss()],
   test: {
     environment: 'node',
