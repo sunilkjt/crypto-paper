@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { supabaseEnvStatus } from "../supabase/client";
 import { useAuth } from "../supabase/auth";
 import type { CloudSyncStatus } from "../supabase/types";
 import { Card, CardHeader } from "./ui";
@@ -54,14 +55,24 @@ export function AuthPanel({
   const [busy, setBusy] = useState(false);
 
   if (!configured) {
+    // Show which variable is missing (presence only, never values) so a bad
+    // deploy/secret can be diagnosed straight from the live site.
+    const env = supabaseEnvStatus();
     return (
       <Card>
         <CardHeader title="Account" subtitle="Cloud sync not configured" />
-        <p className="px-5 py-4 text-xs leading-relaxed text-slate-500">
-          Paper Trading works locally. Set <span className="font-mono text-slate-300">VITE_SUPABASE_URL</span> and{" "}
-          <span className="font-mono text-slate-300">VITE_SUPABASE_PUBLISHABLE_KEY</span> to synchronize across
-          devices.
-        </p>
+        <div className="space-y-1.5 px-5 py-4 text-xs leading-relaxed text-slate-500">
+          <p>
+            Paper Trading works locally. Set <span className="font-mono text-slate-300">VITE_SUPABASE_URL</span>{" "}
+            and <span className="font-mono text-slate-300">VITE_SUPABASE_PUBLISHABLE_KEY</span> as GitHub Actions
+            secrets, then rebuild, to synchronize across devices.
+          </p>
+          <p className="font-mono">
+            URL: {env.url ? <span className="font-bold text-emerald-300">set ✓</span> : <span className="font-bold text-rose-300">missing ✗</span>}
+            {" · "}
+            Key: {env.key ? <span className="font-bold text-emerald-300">set ✓</span> : <span className="font-bold text-rose-300">missing ✗</span>}
+          </p>
+        </div>
       </Card>
     );
   }
