@@ -5,16 +5,19 @@ import './index.css'
 import App from './App.tsx'
 import { MarketDataProvider } from './market/store.tsx'
 import { ScanProvider } from './scanner/ScanContext.tsx'
+import { AuthProvider } from './supabase/auth.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {/* HashRouter: works on static hosts (GitHub Pages) with no server rewrites. */}
     <HashRouter>
-      <MarketDataProvider>
-        <ScanProvider>
-          <App />
-        </ScanProvider>
-      </MarketDataProvider>
+      <AuthProvider>
+        <MarketDataProvider>
+          <ScanProvider>
+            <App />
+          </ScanProvider>
+        </MarketDataProvider>
+      </AuthProvider>
     </HashRouter>
   </StrictMode>,
 )

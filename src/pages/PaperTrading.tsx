@@ -2,6 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Card, CardHeader, PageHeader } from "../components/ui";
 import { CandleChart, type ChartLevel } from "../components/CandleChart";
 import { ConnectionBadge } from "../components/ConnectionBadge";
+import { AuthPanel, CloudSyncBadge } from "../components/AuthPanel";
+import { usePaperCloudSync } from "../supabase/usePaperCloudSync";
+import { getSupabase } from "../supabase/client";
+import { useAuth } from "../supabase/auth";
 import { useMarkets } from "../market/store";
 import { useScan } from "../scanner";
 import { useCandles } from "../market/useCandles";
@@ -33,6 +37,7 @@ export default function PaperTrading() {
   const [confirmReset, setConfirmReset] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [coinFilter, setCoinFilter] = useState("ALL");
+  const [migrating, setMigrating] = useState(false);
   const autoTaken = useMemo(() => new Set<string>(), []);
 
   useEffect(() => engine.subscribe(setSnap), [engine]);
@@ -44,6 +49,11 @@ export default function PaperTrading() {
     }
     return m;
   }, [markets]);
+
+  // Cloud sync (multi-device): same login => same balance/positions/history.
+  // Engine math untouched; this only persists + rehydrates snapshots.
+  const cloud = usePaperCloudSync(engine, marks);
+  const { user } = useAuth();
 
   // Drive open simulated positions off live marks.
   useEffect(() => {
@@ -137,16 +147,72 @@ export default function PaperTrading() {
 
   const selected = open.find((p) => p.id === selectedId) ?? open[0] ?? null;
 
+  const handleReset = async () => {
+    engine.reset({
+      ...snap.config,
+      startingBalance: Number(balanceInput) || 1000,
+      riskPerTrade: (Number(riskInput) || 1) / 100,
+    });
+    autoTaken.clear();
+    setConfirmReset(false);
+    // Keep cloud consistent: clear remote positions/trades so a reset does not
+    // resurrect stale rows on the next login. Best-effort; local already reset.
+    try {
+      const sb = getSupabase();
+      const accId = cloud.account?.id;
+      if (sb && user && accId) {
+        await sb.from("paper_positions").delete().eq("account_id", accId);
+        await sb.from("paper_trades").delete().eq("account_id", accId);
+        try {
+          localStorage?.removeItem(`cryptoin:paper-migrated:${user.id}`);
+        } catch { /* ignore */ }
+      }
+    } catch { /* local reset already succeeded */ }
+  };
+
+  const handleMigrate = async () => {
+    setMigrating(true);
+    try {
+      await cloud.migrate();
+    } finally {
+      setMigrating(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader
         title="Paper Trading"
         description="Simulated positions on live marks. No exchange orders exist in this app."
-        right={<ConnectionBadge showLabel={false} />}
+        right={
+          <>
+            <CloudSyncBadge status={cloud.status} />
+            <ConnectionBadge showLabel={false} />
+          </>
+        }
       />
       <p className="mb-4 rounded-2xl border border-emerald-400/30 bg-emerald-400/[0.07] px-5 py-3 text-[13px] font-bold tracking-wide text-emerald-200">
         {SAFETY}
       </p>
+
+      <div className="mb-4">
+        <AuthPanel
+          syncStatus={cloud.status}
+          needsMigration={cloud.needsMigration}
+          migrated={cloud.migrated}
+          lastError={cloud.lastError}
+          onMigrate={() => void handleMigrate()}
+          migrating={migrating}
+        />
+        {cloud.status === "error" && (
+          <button
+            onClick={cloud.retry}
+            className="mt-2 rounded-xl border border-slate-700 px-3 py-1.5 text-xs font-bold text-slate-300 hover:bg-slate-800"
+          >
+            Retry sync
+          </button>
+        )}
+      </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Starting Balance" value={`$${snap.config.startingBalance.toLocaleString()}`} />
@@ -189,11 +255,7 @@ export default function PaperTrading() {
               ) : (
                 <span className="inline-flex gap-2">
                   <button
-                    onClick={() => {
-                      engine.reset({ ...snap.config, startingBalance: Number(balanceInput) || 1000, riskPerTrade: (Number(riskInput) || 1) / 100 });
-                      autoTaken.clear();
-                      setConfirmReset(false);
-                    }}
+                    onClick={() => void handleReset()}
                     className="rounded-xl bg-rose-500 px-3 py-2 text-xs font-bold text-white"
                   >
                     Confirm reset

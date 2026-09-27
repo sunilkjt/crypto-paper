@@ -19,6 +19,7 @@ import { cn } from "../../lib/cn";
 import { APP_NAME } from "../../types";
 import { useMarkets } from "../../market/store";
 import { ConnectionBadge, ConnectionLine } from "../ConnectionBadge";
+import { AccountChip } from "../AccountChip";
 import { DiagnosticsPanel, isDevDiagnosticsEnabled } from "../DiagnosticsPanel";
 import {
   alertCoinNavigation,
@@ -201,6 +202,7 @@ export default function AppLayout() {
                 <ConnectionLine />
               </span>
               <ConnectionBadge />
+              <AccountChip />
               <div className="relative">
                 <button
                   aria-label="Signal notifications"

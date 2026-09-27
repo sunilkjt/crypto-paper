@@ -179,4 +179,59 @@ export class PaperEngine {
     this.snapshot = emptySnapshot(config);
     this.commit();
   }
+
+  // --- Cloud sync seams (no math changes; copy values verbatim) ---
+
+  /** Replace the whole snapshot (initial cloud load). Marks closed ids counted. */
+  replaceSnapshot(snap: PaperSnapshot): void {
+    this.counted.clear();
+    for (const p of snap.positions) {
+      if (p.closedAt !== null) this.counted.add(p.id);
+    }
+    this.snapshot = { ...snap, positions: [...snap.positions] };
+    this.commit();
+  }
+
+  /** Insert or replace one remote position by id (realtime incremental). */
+  mergeRemotePosition(p: PaperPosition): boolean {
+    const i = this.snapshot.positions.findIndex((x) => x.id === p.id);
+    if (i >= 0) {
+      const cur = this.snapshot.positions[i];
+      // Closed is terminal — never reopen via remote echo.
+      if (cur.closedAt !== null && p.closedAt === null) return false;
+      const next = [...this.snapshot.positions];
+      next[i] = { ...p };
+      this.snapshot.positions = next;
+    } else {
+      this.snapshot.positions = [{ ...p }, ...this.snapshot.positions];
+    }
+    if (p.closedAt !== null) this.counted.add(p.id);
+    this.commit();
+    return true;
+  }
+
+  /** Apply authoritative cloud account totals (balance/stats/config only). */
+  applyRemoteAccountTotals(next: {
+    balance: number;
+    realizedPnl: number;
+    feesPaid: number;
+    closedCount: number;
+    wins: number;
+    peakEquity: number;
+    maxDrawdownPct: number;
+    config: PaperConfig;
+  }): void {
+    this.snapshot = {
+      ...this.snapshot,
+      balance: next.balance,
+      realizedPnl: next.realizedPnl,
+      feesPaid: next.feesPaid,
+      closedCount: next.closedCount,
+      wins: next.wins,
+      peakEquity: next.peakEquity,
+      maxDrawdownPct: next.maxDrawdownPct,
+      config: { ...next.config },
+    };
+    this.commit();
+  }
 }
