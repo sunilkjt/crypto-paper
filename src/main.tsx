@@ -21,3 +21,15 @@ createRoot(document.getElementById('root')!).render(
     </HashRouter>
   </StrictMode>,
 )
+
+// PWA: register the service worker in production builds only (dev stays
+// uncached). BASE_URL-aware so it works at "/" and "/crypto-paper/".
+if ("serviceWorker" in navigator && import.meta.env.PROD) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker
+      .register(`${import.meta.env.BASE_URL}sw.js`)
+      .catch(() => {
+        // Offline shell is a progressive enhancement — app works without it.
+      });
+  });
+}
