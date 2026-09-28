@@ -5,8 +5,8 @@ import type { PaperSnapshot } from "../paper";
 import { getSupabase, isSupabaseConfigured } from "./client";
 import { useAuth } from "./auth";
 import {
-  cloudToSnapshot,
   closedToTradeRow,
+  decideInitialLoad,
   ensurePaperAccount,
   fetchPositions,
   fetchTrades,
@@ -25,6 +25,12 @@ const LAST_EXIT_KEY = "cryptoin:paper-last-exit:v1";
 export interface PaperCloudSync {
   status: CloudSyncStatus;
   account: PaperAccountRow | null;
+  /**
+   * True once the initial cloud load for the current user has completed.
+   * Until then the local engine may still hold pre-login defaults and MUST
+   * NOT be displayed as the account nor pushed back to Supabase.
+   */
+  hydrated: boolean;
   needsMigration: boolean;
   migrated: boolean;
   lastError: string | null;
@@ -55,6 +61,7 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [needsMigration, setNeedsMigration] = useState(false);
   const [migrated, setMigrated] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [nonce, setNonce] = useState(0);
 
   const accountRef = useRef<PaperAccountRow | null>(null);
@@ -65,8 +72,17 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
   const lastExitRef = useRef<Map<string, number | null>>(new Map());
   const channelRef = useRef<RealtimeChannel | null>(null);
   const snapshotRef = useRef<number>(0);
+  // Hydration gate: pushes are forbidden until the initial cloud load for the
+  // current user completes. This is THE fix for fresh-device logins
+  // overwriting the cloud account with local $1,000 defaults.
+  const hydratedRef = useRef(false);
+  // Fresh-value refs so debounced pushes never capture stale closures.
+  const marksRef = useRef(marks);
+  const userRef = useRef(user);
 
   accountRef.current = account;
+  marksRef.current = marks;
+  userRef.current = user;
 
   const online = useCallback(() => (typeof navigator === "undefined" ? true : navigator.onLine !== false), []);
 
@@ -86,11 +102,19 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
       }
       setAccount(null);
       setNeedsMigration(false);
+      setHydrated(false);
+      hydratedRef.current = false;
+      lastPushedSig.current = "";
       setStatus("signed-out");
       return;
     }
     let cancelled = false;
     const mySnapshot = ++snapshotRef.current;
+    // A (re-)login starts unhydrated: any engine emission from here on is
+    // pre-cloud state and must neither display as truth nor push.
+    hydratedRef.current = false;
+    setHydrated(false);
+    lastPushedSig.current = "";
     (async () => {
       setStatus("loading");
       setLastError(null);
@@ -118,19 +142,19 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
         setStatus(online() ? "error" : "offline");
         // Still subscribe realtime so a retry can heal.
       } else {
-        const cloudEmpty = posRows.length === 0 && tradeRows.length === 0;
         const localMeaningful = isLocalDataMeaningful(local);
         const alreadyMigrated =
           typeof localStorage !== "undefined" && localStorage.getItem(MIGRATION_FLAG(user.id)) === "1";
-        if (!cloudEmpty) {
-          // Cloud authoritative after login: replace local (multi-device parity).
+        // Cloud wins whenever it holds anything (decideInitialLoad is pure +
+        // unit-tested). Empty cloud + meaningful local -> offer safe import.
+        const decision = decideInitialLoad(local, acc, posRows, tradeRows);
+        if (decision.replace && decision.snapshot) {
           suppressUntil.current = Date.now() + 3000;
-          engine.replaceSnapshot(cloudToSnapshot(acc, posRows, tradeRows, local.config.startingBalance));
+          engine.replaceSnapshot(decision.snapshot);
           lastPushedSig.current = sigOf(engine.getSnapshot());
           setNeedsMigration(false);
           setMigrated(alreadyMigrated);
         } else if (localMeaningful && !alreadyMigrated) {
-          // Local data exists, cloud empty -> offer safe import (no auto-push spam).
           setNeedsMigration(true);
           setMigrated(false);
           lastPushedSig.current = sigOf(engine.getSnapshot());
@@ -146,6 +170,8 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
         try {
           localStorage?.setItem(LAST_EXIT_KEY, JSON.stringify(Object.fromEntries(exits)));
         } catch { /* ignore */ }
+        hydratedRef.current = true;
+        setHydrated(true);
         setStatus("synced");
         setLastSyncedAt(Date.now());
       }
@@ -292,9 +318,15 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
   );
 
   // ---- Local -> cloud push (debounced, idempotent, honest status) -----------
+  // Two guards fix the fresh-login clobber bug:
+  // 1. Nothing pushes before hydration (the immediate subscribe() emission and
+  //    any pre-cloud commit carry local defaults, never the account).
+  // 2. The timer carries no snapshot closure — pushSnapshot re-reads the live
+  //    engine state at fire time and re-checks the signature.
   useEffect(() => {
     if (!user || !account) return;
     return engine.subscribe((snap) => {
+      if (!hydratedRef.current) return;
       if (Date.now() < suppressUntil.current) {
         lastPushedSig.current = sigOf(snap);
         return;
@@ -303,21 +335,26 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
       if (sig === lastPushedSig.current) return;
       if (pushTimer.current !== null) window.clearTimeout(pushTimer.current);
       setStatus((s) => (s === "synced" || s === "signed-out" ? "syncing" : s));
-      pushTimer.current = window.setTimeout(() => void pushSnapshot(snap), 900);
+      pushTimer.current = window.setTimeout(() => void pushSnapshot(), 900);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, user?.id, account?.id]);
 
   const pushSnapshot = useCallback(
-    async (snap: PaperSnapshot) => {
+    async () => {
       const sb = getSupabase();
       const acc = accountRef.current;
-      if (!sb || !acc || !user) return;
+      const u = userRef.current;
+      const liveMarks = marksRef.current;
+      if (!sb || !acc || !u) return;
+      if (!hydratedRef.current) return; // Never push pre-cloud state.
       if (pushing.current) return; // Debounce already coalesces; skip overlap.
       if (!online()) {
         setStatus("offline");
         return;
       }
+      const snap = engine.getSnapshot(); // Fresh read — never a stale closure.
+      if (sigOf(snap) === lastPushedSig.current) return;
       pushing.current = true;
       setStatus("syncing");
       try {
@@ -326,18 +363,18 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
         // Push positions: opens + recently closed (cap 200 newest).
         const rows = snap.positions.slice(0, 200);
         for (const p of rows) {
-          const mark = marks.get(p.symbol) ?? null;
-          const err = await upsertPositionRow(sb, positionToRow(p, acc.id, user.id, mark));
+          const mark = liveMarks.get(p.symbol) ?? null;
+          const err = await upsertPositionRow(sb, positionToRow(p, acc.id, u.id, mark));
           if (err) throw new Error(err);
         }
         // Mirror newly-closed positions into immutable trade history (once each).
         for (const p of snap.positions) {
           if (p.closedAt === null) continue;
           if (lastExitRef.current.has(p.id)) continue; // Already mirrored.
-          const mark = marks.get(p.symbol) ?? null;
+          const mark = liveMarks.get(p.symbol) ?? null;
           // Exit price: prefer live mark at push time; fall back to SL/TP3 semantics
           // stored in closeReason is free-text, so live mark is the honest exit.
-          const err = await upsertTradeRow(sb, closedToTradeRow(p, acc.id, user.id, mark));
+          const err = await upsertTradeRow(sb, closedToTradeRow(p, acc.id, u.id, mark));
           if (err) throw new Error(err);
           lastExitRef.current.set(p.id, mark);
         }
@@ -355,12 +392,12 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
           const unreal = snap.positions
             .filter((p) => p.closedAt === null)
             .reduce((a, p) => {
-              const m = marks.get(p.symbol);
+              const m = liveMarks.get(p.symbol);
               if (m === undefined) return a;
               const rem = (p.size / 3) * p.thirdsRemaining;
               return a + (p.direction === "LONG" ? m - p.entry : p.entry - m) * rem;
             }, 0);
-          void recordEquitySnapshot(sb, acc.id, user.id, snap.balance + unreal, snap.balance, unreal);
+          void recordEquitySnapshot(sb, acc.id, u.id, snap.balance + unreal, snap.balance, unreal);
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Sync failed.";
@@ -370,7 +407,7 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
         pushing.current = false;
       }
     },
-    [engine, marks, user],
+    [engine],
   );
 
   // ---- Offline/online transitions -------------------------------------------
@@ -379,7 +416,7 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
     const onOn = () => {
       if (user && account) {
         setStatus("syncing");
-        void pushSnapshot(engine.getSnapshot());
+        void pushSnapshot();
       }
     };
     window.addEventListener("offline", onOff);
@@ -443,8 +480,8 @@ export function usePaperCloudSync(engine: PaperEngine, marks: Map<string, number
   const retry = useCallback(() => setNonce((n) => n + 1), []);
 
   const value = useMemo<PaperCloudSync>(
-    () => ({ status, account, needsMigration, migrated, lastError, lastSyncedAt, migrate, retry }),
-    [status, account, needsMigration, migrated, lastError, lastSyncedAt, migrate, retry],
+    () => ({ status, account, hydrated, needsMigration, migrated, lastError, lastSyncedAt, migrate, retry }),
+    [status, account, hydrated, needsMigration, migrated, lastError, lastSyncedAt, migrate, retry],
   );
   return value;
 }

@@ -22,6 +22,22 @@ export interface PaperStorage {
 
 const PAPER_KEY = "cryptoin:paper-account:v1";
 
+/** Structural check for a persisted snapshot (math untouched). */
+function isValidSnapshot(s: PaperSnapshot | null): s is PaperSnapshot {
+  if (!s || typeof s !== "object") return false;
+  const cfg = (s as { config?: unknown }).config as PaperConfig | undefined;
+  return (
+    typeof s.balance === "number" &&
+    Number.isFinite(s.balance) &&
+    Array.isArray(s.positions) &&
+    !!cfg &&
+    typeof cfg.startingBalance === "number" &&
+    cfg.startingBalance > 0 &&
+    typeof cfg.riskPerTrade === "number" &&
+    typeof cfg.feeRate === "number"
+  );
+}
+
 export class LocalStoragePaperStore implements PaperStorage {
   load(): PaperSnapshot | null {
     try {
@@ -60,10 +76,12 @@ export class PaperEngine {
   constructor(config: PaperConfig, storage: PaperStorage = new LocalStoragePaperStore()) {
     this.storage = storage;
     const saved = storage.load();
-    this.snapshot =
-      saved && saved.config.startingBalance === config.startingBalance
-        ? { ...saved, config }
-        : emptySnapshot(config);
+    // Preserve a previously saved account even when its starting balance
+    // differs from the default (e.g. user configured $100). Discarding it
+    // here used to resurrect a fake $1,000 account on every restart, which
+    // could then overwrite the cloud account on login. Cloud load (when
+    // signed in) still replaces this snapshot authoritatively.
+    this.snapshot = isValidSnapshot(saved) ? saved : emptySnapshot(config);
     for (const p of this.snapshot.positions) {
       if (p.closedAt !== null) this.counted.add(p.id);
     }

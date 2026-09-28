@@ -55,6 +55,18 @@ export default function PaperTrading() {
   const cloud = usePaperCloudSync(engine, marks);
   const { user } = useAuth();
 
+  // Never display a pre-cloud local default as the account: while signed in
+  // and the cloud account is still loading, show a loader instead of $1,000.
+  const cloudLoading = !!user && !cloud.hydrated && cloud.status === "loading";
+
+  // Keep config inputs in step with the authoritative config (e.g. cloud
+  // account uses $100 while this device defaulted to $1,000). Typing never
+  // triggers this — only real config changes do.
+  useEffect(() => {
+    setBalanceInput(String(snap.config.startingBalance));
+    setRiskInput(String(snap.config.riskPerTrade * 100));
+  }, [snap.config.startingBalance, snap.config.riskPerTrade]);
+
   // Drive open simulated positions off live marks.
   useEffect(() => {
     let changed = false;
@@ -214,6 +226,15 @@ export default function PaperTrading() {
         )}
       </div>
 
+      {cloudLoading ? (
+        <div role="status" aria-label="Loading paper account" className="rounded-2xl border border-slate-800 bg-slate-900/70 px-5 py-12 text-center">
+          <p className="animate-pulse text-sm font-bold text-slate-200">🟡 Loading cloud account…</p>
+          <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">
+            Fetching your paper account from Supabase. A local default is never shown as your balance.
+          </p>
+        </div>
+      ) : (
+        <>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Starting Balance" value={`$${snap.config.startingBalance.toLocaleString()}`} />
         <Stat label="Current Equity" value={`$${equity.toFixed(2)}`} tone={equity >= snap.config.startingBalance ? "up" : "down"} />
@@ -363,6 +384,8 @@ export default function PaperTrading() {
           </div>
         )}
       </Card>
+        </>
+      )}
     </div>
   );
 }

@@ -8,11 +8,11 @@ import { cn } from "../lib/cn";
 const SYNC_META: Record<CloudSyncStatus, { dot: string; emoji: string; label: string }> = {
   disabled: { dot: "bg-slate-500", emoji: "⚪", label: "Local only" },
   "signed-out": { dot: "bg-slate-500", emoji: "⚪", label: "Local only" },
-  loading: { dot: "bg-amber-400", emoji: "🟡", label: "Syncing" },
+  loading: { dot: "bg-amber-400", emoji: "🟡", label: "Loading cloud account" },
   syncing: { dot: "bg-amber-400", emoji: "🟡", label: "Syncing" },
   synced: { dot: "bg-emerald-400", emoji: "🟢", label: "Cloud Synced" },
-  offline: { dot: "bg-rose-500", emoji: "🔴", label: "Offline" },
-  error: { dot: "bg-rose-500", emoji: "🔴", label: "Sync error" },
+  offline: { dot: "bg-orange-400", emoji: "🟠", label: "Offline" },
+  error: { dot: "bg-rose-500", emoji: "🔴", label: "Cloud sync error" },
 };
 
 export function CloudSyncBadge({ status }: { status: CloudSyncStatus }) {

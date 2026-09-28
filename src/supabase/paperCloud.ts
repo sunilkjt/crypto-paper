@@ -281,11 +281,31 @@ export async function recordEquitySnapshot(
   }
 }
 
+/**
+ * Initial-load policy (pure, unit-tested). Cloud is authoritative:
+ * whenever the cloud holds ANY account data (positions or trades), the local
+ * snapshot — including a default $1,000 singleton or stale localStorage —
+ * must be replaced, never pushed back. Returns null when the cloud is empty
+ * (caller then offers migration or starts fresh locally).
+ */
+export function decideInitialLoad(
+  local: PaperSnapshot,
+  account: PaperAccountRow,
+  positionRows: PaperPositionRow[],
+  tradeRows: Omit<PaperTradeRow, "created_at">[],
+): { replace: true; snapshot: PaperSnapshot } | { replace: false; snapshot: null } {
+  void local;
+  if (positionRows.length > 0 || tradeRows.length > 0) {
+    return { replace: true, snapshot: cloudToSnapshot(account, positionRows, tradeRows, 0) };
+  }
+  return { replace: false, snapshot: null };
+}
+
 /** Rebuild a local PaperSnapshot from cloud rows (math untouched, values copied). */
 export function cloudToSnapshot(
   account: PaperAccountRow,
   positionRows: PaperPositionRow[],
-  tradeRows: PaperTradeRow[],
+  tradeRows: Omit<PaperTradeRow, "created_at">[],
   localStartingBalance: number,
 ): PaperSnapshot {
   const positions: PaperPosition[] = [];
