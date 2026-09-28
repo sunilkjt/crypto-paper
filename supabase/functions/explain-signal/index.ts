@@ -17,7 +17,7 @@
 //   supabase secrets set GEMINI_API_KEY=<key>   # server-side ONLY, never VITE_*
 // Frontend: VITE_AI_ENDPOINT=https://<ref>.supabase.co/functions/v1/explain-signal
 
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const UPSTREAM_TIMEOUT_MS = 20_000;
 const MAX_BODY_BYTES = 131_072;
