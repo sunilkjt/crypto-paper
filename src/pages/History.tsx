@@ -437,7 +437,14 @@ const HistoryCard = memo(function HistoryCard({ e }: { e: JournalEntry }) {
           </p>
           {(e.aiSummary || e.newsHeadlines.length > 0) && (
             <div className="space-y-1.5 border-t border-slate-800/70 px-3 py-3 text-xs leading-relaxed">
-              {e.aiSummary && <p className="break-words text-slate-300">{e.aiSummary}</p>}
+              {e.aiSummary && (
+                <div className="min-w-0">
+                  <p className="mb-0.5 text-[10px] font-bold tracking-widest text-violet-300/90 uppercase">
+                    <span aria-hidden="true">✨</span> AI explanation
+                  </p>
+                  <p className="break-words text-slate-300">{e.aiSummary}</p>
+                </div>
+              )}
               {e.newsHeadlines.map((h, i) => (
                 <p key={i} className="break-words text-slate-500">· {h}</p>
               ))}

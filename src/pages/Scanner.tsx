@@ -2,6 +2,8 @@ import { memo, useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Search } from "lucide-react";
 import { Card, CardHeader, PageHeader } from "../components/ui";
+import { AiStatusBadge } from "../components/AiStatusBadge";
+import { SignalAiButton } from "../components/SignalAiButton";
 import { FreshnessLabel } from "../components/LiveBadge";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { timeAgo } from "../components/NewsList";
@@ -185,6 +187,7 @@ export default function Scanner() {
         right={
           <div className="flex flex-wrap items-center gap-2">
             <FeedStatus connection={connection} />
+            <AiStatusBadge />
             <FreshnessLabel updatedAt={updatedAt} />
             <ConnectionBadge />
           </div>
@@ -499,8 +502,10 @@ const SignalCard = memo(function SignalCard({
             </ul>
           )}
         </div>
+      </Link>
 
-        {/* Secondary technicals */}
+      {/* Secondary technicals (outside the link so it expands without navigating) */}
+      <div className="flex min-w-0 flex-1 flex-col gap-3 px-4 pb-4">
         <details className="rounded-xl border border-slate-800 bg-slate-950/60">
           <summary className="flex min-h-[44px] cursor-pointer items-center px-3 text-xs font-bold text-slate-300 focus-visible:outline-2 focus-visible:outline-cyan-400">
             Technical details
@@ -523,11 +528,17 @@ const SignalCard = memo(function SignalCard({
           <p className="text-xs leading-relaxed break-words text-slate-300">{why}</p>
         </div>
 
-        <p className="mt-auto flex min-h-[44px] items-center justify-between gap-2 border-t border-slate-800/70 pt-3 text-xs">
+        <SignalAiButton symbol={r.symbol} signal={s} market={market ?? undefined} />
+
+        <Link
+          to={coinHref}
+          className="mt-auto flex min-h-[44px] min-w-0 items-center justify-between gap-2 border-t border-slate-800/70 pt-3 text-xs focus-visible:outline-2 focus-visible:outline-cyan-400"
+          aria-label={`${r.symbol} details. Open analysis.`}
+        >
           <span className="rounded bg-slate-800 px-2 py-1 font-mono text-[10px] font-bold text-slate-400">{s.timeframe} setup</span>
           <span className="font-bold text-cyan-300">View Analysis <span aria-hidden="true">→</span></span>
-        </p>
-      </Link>
+        </Link>
+      </div>
     </article>
   );
 });
