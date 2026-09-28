@@ -1,8 +1,12 @@
 // Supabase Edge Function: explain-signal (Deno).
 //
-// Secure Gemini backend for the Crypto-Paper frontend. The browser NEVER holds
-// the Gemini key: it POSTs only engine-produced signal facts, and this
-// function calls Google with GEMINI_API_KEY from the server environment.
+// Secure AI backend for the Crypto-Paper frontend. The browser NEVER holds
+// any provider key: it POSTs only engine-produced signal facts, and this
+// function calls the configured provider with a server-side key.
+//
+// Provider is chosen by the AI_PROVIDER secret: "gemini" (default,
+// GEMINI_API_KEY) or "groq" (GROQ_API_KEY, free tier, no billing card).
+// GROQ_MODEL overrides the default Groq model if it ever retires.
 //
 // Wire protocol (matches the frontend HttpAiProvider exactly):
 //   POST { system: string, user: string, input: AiAnalysisInput }
@@ -15,10 +19,12 @@
 // Deploy (from repo root, Supabase CLI logged in):
 //   supabase functions deploy explain-signal
 //   supabase secrets set GEMINI_API_KEY=<key>   # server-side ONLY, never VITE_*
+//   supabase secrets set AI_PROVIDER=groq GROQ_API_KEY=<key>
 // Frontend: VITE_AI_ENDPOINT=https://<ref>.supabase.co/functions/v1/explain-signal
 
 const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const UPSTREAM_TIMEOUT_MS = 20_000;
 const MAX_BODY_BYTES = 131_072;
 const MAX_STR = 2000;
@@ -91,7 +97,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return json(headers, 405, { error: "Method not allowed." });
   }
 
-  const apiKey = Deno.env.get("GEMINI_API_KEY") ?? "";
+  const provider = (Deno.env.get("AI_PROVIDER") ?? "gemini").toLowerCase();
+  const groqModel = Deno.env.get("GROQ_MODEL") ?? "llama-3.3-70b-versatile";
+  const apiKey =
+    provider === "groq" ? (Deno.env.get("GROQ_API_KEY") ?? "") : Deno.env.get("GEMINI_API_KEY") ?? "";
   if (apiKey === "") {
     return json(headers, 503, { error: "AI backend not configured." });
   }
@@ -136,23 +145,43 @@ Deno.serve(async (req: Request): Promise<Response> => {
     .filter(Boolean)
     .join("\n");
 
+  const isGroq = provider === "groq";
   let upstream: Response;
   try {
-    upstream = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(apiKey)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemInstruction }] },
-        contents: [{ role: "user", parts: [{ text: facts }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: RESPONSE_SCHEMA,
-          maxOutputTokens: 600,
-          temperature: 0.2,
-        },
-      }),
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
+    upstream = isGroq
+      ? await fetch(GROQ_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: groqModel,
+            messages: [
+              { role: "system", content: `${systemInstruction}\nReturn ONLY JSON with keys: summary, marketStructure, setup, confirmations[], conflicts[], risks[], invalidation, catalysts[], conclusion, directionEcho (${direction}).` },
+              { role: "user", content: facts },
+            ],
+            temperature: 0.2,
+            max_tokens: 600,
+            response_format: { type: "json_object" },
+          }),
+          signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+        })
+      : await fetch(`${GEMINI_URL}?key=${encodeURIComponent(apiKey)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemInstruction }] },
+            contents: [{ role: "user", parts: [{ text: facts }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: RESPONSE_SCHEMA,
+              maxOutputTokens: 600,
+              temperature: 0.2,
+            },
+          }),
+          signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+        });
   } catch {
     return json(headers, 503, { error: "AI provider unreachable." });
   }
@@ -174,11 +203,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   let parsed: Record<string, unknown>;
   try {
-    const data = (await upstream.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
-    const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
-    parsed = JSON.parse(text) as Record<string, unknown>;
+    if (isGroq) {
+      const data = (await upstream.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const text = data.choices?.[0]?.message?.content ?? "";
+      parsed = JSON.parse(text) as Record<string, unknown>;
+    } else {
+      const data = (await upstream.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+      parsed = JSON.parse(text) as Record<string, unknown>;
+    }
   } catch {
     return json(headers, 502, { error: "AI returned an unusable response." });
   }
@@ -201,7 +238,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       catalysts: clipList(parsed.catalysts),
       conclusion: clip(parsed.conclusion),
       directionEcho: direction,
-      provider: "gemini-edge",
+      provider: isGroq ? "groq-edge" : "gemini-edge",
     },
   });
 });
