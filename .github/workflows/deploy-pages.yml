@@ -37,6 +37,8 @@ jobs:
           # secrets; NEVER put sb_secret_* / service_role here).
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          # Gemini explanations backend (empty = local explainer fallback).
+          VITE_AI_ENDPOINT: ${{ secrets.VITE_AI_ENDPOINT }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
