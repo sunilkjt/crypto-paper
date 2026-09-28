@@ -161,7 +161,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return json(headers, 429, { error: "AI rate limit reached — try again shortly." });
   }
   if (!upstream.ok) {
-    return json(headers, 502, { error: "AI provider error." });
+    // Surface Google's real reason (status + message) so key/project issues
+    // are diagnosable. Never echoes the request URL, so the key can't leak.
+    let detail = "";
+    try {
+      detail = (await upstream.text()).slice(0, 300);
+    } catch {
+      // ignore body read failures
+    }
+    return json(headers, 502, { error: `AI provider error (HTTP ${upstream.status}). ${detail}`.slice(0, 500) });
   }
 
   let parsed: Record<string, unknown>;
