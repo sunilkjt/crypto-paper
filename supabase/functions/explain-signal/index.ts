@@ -98,7 +98,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   const provider = (Deno.env.get("AI_PROVIDER") ?? "gemini").toLowerCase();
-  const groqModel = Deno.env.get("GROQ_MODEL") ?? "llama-3.3-70b-versatile";
+  const groqModel = Deno.env.get("GROQ_MODEL") ?? "openai/gpt-oss-20b";
   const apiKey =
     provider === "groq" ? (Deno.env.get("GROQ_API_KEY") ?? "") : Deno.env.get("GEMINI_API_KEY") ?? "";
   if (apiKey === "") {
