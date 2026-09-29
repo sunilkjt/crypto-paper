@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Card, CardHeader, PageHeader } from "../components/ui";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import {
+  COOLDOWN_OPTIONS,
   DEFAULT_ALERT_SETTINGS,
   loadAlertSettings,
   saveAlertSettings,
@@ -130,7 +131,7 @@ export default function Settings() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader title="Notifications" subtitle="In-app bell always on · browser/sound on explicit enable" />
+          <CardHeader title="Notifications" subtitle="Browser/sound on explicit enable · delivery never alters signals" />
           <Row
             label="Browser notifications"
             desc={`Permission: ${browserState} — asked only when enabling`}
@@ -149,6 +150,11 @@ export default function Settings() {
             label="Sound alerts"
             desc="Short beep on new alert events"
             control={<Toggle label="Toggle sound alerts" on={alerts.soundAlerts} onClick={() => patch({ soundAlerts: !alerts.soundAlerts })} />}
+          />
+          <Row
+            label="In-app notifications"
+            desc="Topbar bell (alert history always stays on the Alerts page)"
+            control={<Toggle label="Toggle in-app notifications bell" on={alerts.inAppNotifications} onClick={() => patch({ inAppNotifications: !alerts.inAppNotifications })} />}
           />
           <Row
             label="Telegram"
@@ -180,6 +186,49 @@ export default function Settings() {
                     className={cn("rounded-md px-3 py-1.5 text-xs font-bold", alerts.directions.includes(d) ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300")}
                   >
                     {d}
+                  </button>
+                ))}
+              </div>
+            }
+          />
+          <Row
+            label="Market categories"
+            desc="Crypto / stocks / commodities delivery (history always records)"
+            control={
+              <div className="flex flex-wrap gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1">
+                {(["crypto", "stocks", "commodities"] as const).map((c) => {
+                  const on = alerts.categories[c];
+                  const othersOn = (["crypto", "stocks", "commodities"] as const).some((k) => k !== c && alerts.categories[k]);
+                  return (
+                    <button
+                      key={c}
+                      onClick={() => {
+                        if (on && !othersOn) return;
+                        patch({ categories: { ...alerts.categories, [c]: !on } });
+                      }}
+                      aria-pressed={on}
+                      className={cn("rounded-md px-3 py-1.5 text-xs font-bold", on ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300")}
+                    >
+                      {c === "crypto" ? "Crypto" : c === "stocks" ? "Stocks" : "Commodities"}
+                    </button>
+                  );
+                })}
+              </div>
+            }
+          />
+          <Row
+            label="Notification cooldown"
+            desc="Suppress repeat facts (delivery only, history unaffected)"
+            control={
+              <div className="flex flex-wrap gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1">
+                {COOLDOWN_OPTIONS.map((o) => (
+                  <button
+                    key={o.label}
+                    onClick={() => patch({ cooldownMs: o.value })}
+                    aria-pressed={alerts.cooldownMs === o.value}
+                    className={cn("rounded-md px-3 py-1.5 text-xs font-bold", alerts.cooldownMs === o.value ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300")}
+                  >
+                    {o.label}
                   </button>
                 ))}
               </div>

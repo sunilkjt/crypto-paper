@@ -26,6 +26,16 @@
 
 export type MarketClass = "crypto" | "stocks" | "commodities" | "other";
 
+/** The three user-facing signal categories (tabs, filters, settings). */
+export type MarketCategory = "crypto" | "stocks" | "commodities";
+
+export const CATEGORY_LABEL: Record<MarketCategory | "other", string> = {
+  crypto: "CRYPTO",
+  stocks: "STOCK",
+  commodities: "COMMODITY",
+  other: "OTHER",
+};
+
 /** Part after the first `dex:` — uppercased for exact matching. */
 export function baseSymbol(symbol: string): string {
   const i = symbol.indexOf(":");

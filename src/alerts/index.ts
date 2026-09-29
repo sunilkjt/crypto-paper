@@ -6,11 +6,15 @@ export {
   type SignalEventType,
 } from "./events";
 export {
+  COOLDOWN_OPTIONS,
   DEFAULT_ALERT_SETTINGS,
   loadAlertSettings,
   passesAlertFilters,
   saveAlertSettings,
+  subscribeAlertSettings,
+  __setAlertSettingsStorageForTests,
   type AlertSettings,
+  type CooldownOption,
 } from "./settings";
 export {
   addWatched,

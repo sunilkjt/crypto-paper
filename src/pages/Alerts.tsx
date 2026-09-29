@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardHeader, PageHeader, TableShell } from "../components/ui";
+import { CategoryChip } from "../components/SignalCard";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { useMarkets } from "../market/store";
+import type { MarketClass } from "../market/classify";
 import {
   alertCoinNavigation,
   alertStatusCounts,
@@ -35,13 +37,21 @@ const EVENT_OPTIONS: ("ALL" | SignalEventType)[] = [
 export default function Alerts() {
   const [events, setEvents] = useState<SignalEvent[]>([]);
   const [filters, setFilters] = useState<AlertFilters>({ ...EMPTY_ALERT_FILTERS });
+  const [catFilter, setCatFilter] = useState<"ALL" | MarketClass>("ALL");
   const { markets, connection } = useMarkets();
   const navigate = useNavigate();
+  const mainSymbols = useMemo(
+    () => new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase())),
+    [markets],
+  );
 
   useEffect(() => subscribeAlerts(setEvents), []);
 
   const prices = useMemo(() => new Map(markets.map((m) => [m.symbol, m.markPrice])), [markets]);
-  const filtered = useMemo(() => filterAlerts(events, filters).slice(0, 200), [events, filters]);
+  const filtered = useMemo(
+    () => filterAlerts(events, { ...filters, category: catFilter }).slice(0, 200),
+    [events, filters, catFilter],
+  );
   const counts = useMemo(() => alertStatusCounts(events), [events]);
   const coins = useMemo(() => ["ALL", ...new Set(events.map((e) => e.symbol)).values()].sort(), [events]);
 
@@ -80,19 +90,24 @@ export default function Alerts() {
       <Card>
         <CardHeader title="Alert History" subtitle="Timestamp · coin · direction · setup · strength · event · status" />
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-800/70 px-4 py-3 text-xs">
-          <select value={filters.coin} onChange={(e) => setFilters({ ...filters, coin: e.target.value })} className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
+          <select value={filters.coin} onChange={(e) => setFilters({ ...filters, coin: e.target.value })} aria-label="Coin filter" className="min-h-[44px] rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
             {coins.map((c) => (
               <option key={c} value={c}>{c === "ALL" ? "All coins" : c}</option>
             ))}
           </select>
-          <select value={filters.direction} onChange={(e) => setFilters({ ...filters, direction: e.target.value as AlertFilters["direction"] })} className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
+          <select value={filters.direction} onChange={(e) => setFilters({ ...filters, direction: e.target.value as AlertFilters["direction"] })} aria-label="Direction filter" className="min-h-[44px] rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
             {(["ALL", "LONG", "SHORT"] as const).map((d) => (
               <option key={d} value={d}>{d}</option>
             ))}
           </select>
-          <select value={filters.event} onChange={(e) => setFilters({ ...filters, event: e.target.value as AlertFilters["event"] })} className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
+          <select value={filters.event} onChange={(e) => setFilters({ ...filters, event: e.target.value as AlertFilters["event"] })} aria-label="Event type filter" className="min-h-[44px] rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
             {EVENT_OPTIONS.map((t) => (
               <option key={t} value={t}>{t === "ALL" ? "All events" : t.replace(/_/g, " ")}</option>
+            ))}
+          </select>
+          <select value={catFilter} onChange={(e) => setCatFilter(e.target.value as "ALL" | MarketClass)} aria-label="Market category filter" className="min-h-[44px] rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
+            {(["ALL", "crypto", "stocks", "commodities", "other"] as const).map((c) => (
+              <option key={c} value={c}>{c === "ALL" ? "All categories" : c === "crypto" ? "Crypto" : c === "stocks" ? "Stocks" : c === "commodities" ? "Commodities" : "Other"}</option>
             ))}
           </select>
           <button onClick={() => { clearAlertHistory(); }} className="ml-auto rounded-lg border border-slate-800 px-3 py-1.5 font-bold text-slate-500 hover:border-slate-700">
@@ -133,6 +148,7 @@ export default function Alerts() {
                       {e.symbol || "(unknown)"}{e.watched ? " ★" : ""}
                     </span>
                     <span className="ml-1 font-mono text-[11px] text-slate-500">{formatPriceUsd(prices.get(e.symbol) ?? null, e.symbol)}</span>
+                    <span className="mt-0.5 block w-fit"><CategoryChip symbol={e.symbol} category={e.category} mainSymbols={mainSymbols} /></span>
                   </td>
                   <td className={cn("px-3 py-2 font-bold", e.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>{e.direction}</td>
                     <td className="px-3 py-2 font-mono text-[11px] text-slate-400">{e.setupType}</td>

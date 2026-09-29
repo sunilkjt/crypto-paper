@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Search } from "lucide-react";
 import { Card, CardHeader, PageHeader } from "../components/ui";
 import { AiStatusBadge } from "../components/AiStatusBadge";
@@ -11,8 +12,15 @@ import type { ConnectionState } from "../market/connection";
 import { REFRESH_OPTIONS, UNIVERSE_OPTIONS, useScan } from "../scanner";
 import type { Timeframe } from "../market/hyperliquid/types";
 import type { SetupType } from "../signals/setupType";
+import { classifyMarket, type MarketCategory } from "../market/classify";
 import { addWatched, isWatched, loadWatchlist, removeWatched } from "../alerts/watchlist";
 import { cn } from "../lib/cn";
+
+type CategoryTab = "ALL" | MarketCategory;
+
+function parseCategoryTab(v: string | null): CategoryTab {
+  return v === "crypto" || v === "stocks" || v === "commodities" ? v : "ALL";
+}
 
 type SortKey = "strength" | "newest" | "riskReward" | "dayVolumeNotional" | "dayChangePct" | "rsi" | "fundingRate";
 type DirectionFilter = "ALL" | "LONG" | "SHORT" | "WAIT";
@@ -60,18 +68,27 @@ export default function Scanner() {
   const [volFilter, setVolFilter] = useState<VolumeFilter>("ALL");
   const [starredOnly, setStarredOnly] = useState(false);
   const [watchlist, setWatchlist] = useState<string[]>(() => loadWatchlist());
+  // Category tab persisted in the hash URL (#/scanner?category=stocks) so a
+  // refresh keeps the filter. Default ALL preserves today's full view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [catTab, setCatTab] = useState<CategoryTab>(() => parseCategoryTab(searchParams.get("category")));
 
   const toggleStar = useCallback((symbol: string) => {
     setWatchlist((list) => (isWatched(symbol, list) ? removeWatched(symbol) : addWatched(symbol)));
   }, []);
 
   const prices = useMemo(() => new Map(markets.map((m) => [m.symbol, m])), [markets]);
+  const mainSymbols = useMemo(
+    () => new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase())),
+    [markets],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toUpperCase();
     let rows = summary?.results ?? [];
     if (q) rows = rows.filter((r) => r.symbol.includes(q));
     if (starredOnly) rows = rows.filter((r) => watchlist.includes(r.symbol));
+    if (catTab !== "ALL") rows = rows.filter((r) => classifyMarket(r.symbol, mainSymbols) === catTab);
     if (dirFilter !== "ALL") rows = rows.filter((r) => r.signal.direction === dirFilter);
     if (setupFilter !== "ALL") rows = rows.filter((r) => r.setupType === setupFilter);
     if (strengthFilter !== "ALL") {
@@ -108,7 +125,7 @@ export default function Scanner() {
           return cmpNull(prices.get(a.symbol)?.fundingRate ?? null, prices.get(b.symbol)?.fundingRate ?? null);
       }
     });
-  }, [summary, query, starredOnly, watchlist, dirFilter, setupFilter, strengthFilter, volFilter, sortKey, sortDir, prices]);
+  }, [summary, query, starredOnly, watchlist, catTab, mainSymbols, dirFilter, setupFilter, strengthFilter, volFilter, sortKey, sortDir, prices]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -119,8 +136,15 @@ export default function Scanner() {
     setPage(0);
   };
 
+  const pickCatTab = (c: CategoryTab) => {
+    setCatTab(c);
+    setPage(0);
+    setSearchParams(c === "ALL" ? {} : { category: c }, { replace: true });
+  };
+
   const filtersActive =
     query.trim() !== "" ||
+    catTab !== "ALL" ||
     dirFilter !== "ALL" ||
     setupFilter !== "ALL" ||
     strengthFilter !== "ALL" ||
@@ -129,6 +153,8 @@ export default function Scanner() {
 
   const clearFilters = () => {
     setQuery("");
+    setCatTab("ALL");
+    setSearchParams({}, { replace: true });
     setDirFilter("ALL");
     setSetupFilter("ALL");
     setStrengthFilter("ALL");
@@ -215,6 +241,12 @@ export default function Scanner() {
 
         {/* Filters */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-800/70 px-4 py-3 text-xs">
+          <FilterGroup
+            label="Category"
+            options={["ALL", "CRYPTO", "STOCKS", "COMMODITIES"]}
+            value={catTab === "ALL" ? "ALL" : catTab.toUpperCase()}
+            onPick={(v) => pickCatTab(v === "ALL" ? "ALL" : (v.toLowerCase() as MarketCategory))}
+          />
           <FilterGroup label="Direction" options={["ALL", "LONG", "SHORT", "WAIT"]} value={dirFilter} onPick={(v) => setFilterAndPage(setDirFilter, v as DirectionFilter)} />
           <FilterGroup label="Setup" options={["ALL", "BOUNCE", "BREAKOUT", "BREAKDOWN", "PULLBACK", "REVERSAL", "TREND", "RANGE"]} value={setupFilter} onPick={(v) => setFilterAndPage(setSetupFilter, v as SetupFilter)} />
           <FilterGroup label="Strength" options={["ALL", "WATCH", "SETUP", "STRONG", "HIGH"]} value={strengthFilter} onPick={(v) => setFilterAndPage(setStrengthFilter, v as StrengthFilter)} />
@@ -299,6 +331,7 @@ export default function Scanner() {
                   market={prices.get(r.symbol) ?? null}
                   watched={watchlist.includes(r.symbol)}
                   onToggleStar={toggleStar}
+                  mainSymbols={mainSymbols}
                 />
               ))}
             </div>

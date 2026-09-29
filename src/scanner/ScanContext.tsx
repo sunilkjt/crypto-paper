@@ -138,11 +138,15 @@ export function ScanProvider({ children }: { children: ReactNode }) {
       ]);
       const watchlist = loadWatchlist();
       const marks = new Map(snapshot.map((m) => [m.symbol, m.markPrice]));
+      const mainDexSymbols = new Set(
+        snapshot.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase()),
+      );
       const monitorCtx = {
         marks,
         watchlist,
         settings: alertSettings,
         now: Date.now(),
+        mainDexSymbols,
       };
 
       // Lifecycle + journal (prices from the same snapshot).

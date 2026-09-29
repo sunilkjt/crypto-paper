@@ -23,6 +23,7 @@ import {
   TelegramNotificationProvider,
 } from "../providers";
 import { checkTargets } from "../targets";
+import { DEFAULT_ALERT_SETTINGS } from "../settings";
 import { evaluateTargets } from "../monitor";
 import type { SignalEvent } from "../events";
 import type { Signal } from "../../analysis/signal";
@@ -192,6 +193,6 @@ describe("failure isolation", () => {
     // The monitor only ever receives live-scan results; when the feed is
     // offline the ScanContext skips the scan, so evaluation never runs on
     // stale data. Empty input yields empty output, never errors.
-    expect(evaluateTargets([], new Map(), { marks: new Map(), watchlist: [], settings: { minStrength: 60, directions: ["LONG", "SHORT"], setups: ["ALL"], timeframes: ["5m", "15m", "1h", "4h"], browserNotifications: false, soundAlerts: false, watchlistOnly: false }, now: 0 })).toEqual([]);
+    expect(evaluateTargets([], new Map(), { marks: new Map(), watchlist: [], settings: { ...DEFAULT_ALERT_SETTINGS, minStrength: 60 }, now: 0 })).toEqual([]);
   });
 });

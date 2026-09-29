@@ -3,6 +3,7 @@ import { isListableBounce } from "../analysis/signal";
 import { checkTargets } from "./targets";
 import { stableEventId, type SignalEvent, type SignalEventType } from "./events";
 import { passesAlertFilters, type AlertSettings } from "./settings";
+import { classifyMarket } from "../market/classify";
 
 /**
  * Pure scan evaluation: previous snapshot + fresh results + marks →
@@ -21,6 +22,12 @@ export interface MonitorContext {
   watchlist: string[];
   settings: AlertSettings;
   now?: number;
+  /**
+   * Main-dex symbol set for classification (crypto-mirror rule). Optional
+   * for backward compatibility — callers with market data should pass it so
+   * mirrored crypto perps are not mislabeled.
+   */
+  mainDexSymbols?: Set<string>;
 }
 
 function baseEvent(
@@ -32,12 +39,14 @@ function baseEvent(
 ): SignalEvent | null {
   if (!r.id || r.signal.direction === "WAIT") return null;
   const watched = ctx.watchlist.includes(r.symbol);
+  const category = classifyMarket(r.symbol, ctx.mainDexSymbols ?? new Set<string>());
   const candidate = {
     strength: r.signal.signalStrength,
     direction: r.signal.direction,
     setupType: r.setupType,
     timeframe: r.signal.timeframe,
     watched,
+    category,
   };
   if (!passesAlertFilters(candidate, ctx.settings)) return null;
   return {
@@ -55,6 +64,7 @@ function baseEvent(
     signal: r.signal,
     watched,
     read: false,
+    category,
   };
 }
 

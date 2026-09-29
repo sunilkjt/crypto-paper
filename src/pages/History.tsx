@@ -2,7 +2,10 @@ import { memo, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Search } from "lucide-react";
 import { Card, CardHeader, PageHeader } from "../components/ui";
+import { CategoryChip, FilterGroup } from "../components/SignalCard";
 import { ConnectionBadge } from "../components/ConnectionBadge";
+import { useMarkets } from "../market/store";
+import { classifyMarket, type MarketCategory } from "../market/classify";
 import {
   clearJournal,
   loadJournal,
@@ -76,7 +79,13 @@ export default function History() {
   const [dirFilter, setDirFilter] = useState<DirectionFilter>("ALL");
   const [tfFilter, setTfFilter] = useState("ALL");
   const [recency, setRecency] = useState<RecencyFilter>("ALL");
+  const [catFilter, setCatFilter] = useState<"ALL" | MarketCategory>("ALL");
   const [sortKey, setSortKey] = useState<SortKey>("newest");
+  const { markets } = useMarkets();
+  const mainSymbols = useMemo(
+    () => new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase())),
+    [markets],
+  );
   const [page, setPage] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [initialized, setInitialized] = useState(false);
@@ -170,6 +179,7 @@ export default function History() {
     if (filter === "ACTIVE") list = list.filter((e) => ACTIVE_STATUSES.includes(e.status));
     else if (filter !== "ALL") list = list.filter((e) => e.status === filter);
     if (q) list = list.filter((e) => e.symbol.includes(q));
+    if (catFilter !== "ALL") list = list.filter((e) => classifyMarket(e.symbol, mainSymbols) === catFilter);
     if (dirFilter !== "ALL") list = list.filter((e) => e.direction === dirFilter);
     if (tfFilter !== "ALL") list = list.filter((e) => e.timeframe === tfFilter);
     if (recency !== "ALL") {
@@ -181,7 +191,7 @@ export default function History() {
     else if (sortKey === "score") sorted.sort((a, b) => b.strength - a.strength || b.lastSeen - a.lastSeen);
     else sorted.sort((a, b) => b.lastSeen - a.lastSeen);
     return sorted;
-  }, [entries, filter, query, dirFilter, tfFilter, recency, sortKey]);
+  }, [entries, filter, query, catFilter, mainSymbols, dirFilter, tfFilter, recency, sortKey]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -195,10 +205,11 @@ export default function History() {
   };
 
   const filtersActive =
-    query.trim() !== "" || dirFilter !== "ALL" || filter !== "ALL" || tfFilter !== "ALL" || recency !== "ALL";
+    query.trim() !== "" || catFilter !== "ALL" || dirFilter !== "ALL" || filter !== "ALL" || tfFilter !== "ALL" || recency !== "ALL";
 
   const clearFilters = () => {
     setQuery("");
+    setCatFilter("ALL");
     setDirFilter("ALL");
     setFilter("ALL");
     setTfFilter("ALL");
@@ -262,10 +273,16 @@ export default function History() {
 
         {/* Filters */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-800/70 px-4 py-3 text-xs">
+          <FilterGroup
+            label="Category"
+            options={["ALL", "CRYPTO", "STOCKS", "COMMODITIES"]}
+            value={catFilter === "ALL" ? "ALL" : catFilter.toUpperCase()}
+            onPick={(v) => setFilterAndPage(setCatFilter, (v === "ALL" ? "ALL" : v.toLowerCase()) as "ALL" | MarketCategory)}
+          />
           <FilterGroup label="Status" options={["ALL", "ACTIVE", "NEW", "STRENGTHENING", "WEAKENING", "INVALIDATED", "COMPLETED", "EXPIRED"]} value={filter} onPick={(v) => setFilterAndPage(setFilter, v as StatusFilter)} />
           <FilterGroup label="Direction" options={["ALL", "LONG", "SHORT"]} value={dirFilter} onPick={(v) => setFilterAndPage(setDirFilter, v as DirectionFilter)} />
           <FilterGroup label="Timeframe" options={timeframes} value={tfFilter} onPick={(v) => setFilterAndPage(setTfFilter, v)} />
-          <FilterGroup label="Date" options={["ALL", "24H", "7D", "30D"]} value={recency} onPick={(v) => setFilterAndPage(setRecency, v as RecencyFilter)} />
+          <FilterGroup label="Date" options={["ALL", "24H", "7D", "30D"]} labels={{ "24H": "24h", "7D": "7d", "30D": "30d" }} value={recency} onPick={(v) => setFilterAndPage(setRecency, v as RecencyFilter)} />
           <label className="relative min-h-[44px] w-full flex-1 sm:min-w-[180px] sm:max-w-[240px]">
             <span className="sr-only">Search coin</span>
             <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-slate-500" />
@@ -321,7 +338,7 @@ export default function History() {
           ) : (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
               {rows.map((e) => (
-                <HistoryCard key={e.id} e={e} />
+                <HistoryCard key={e.id} e={e} mainSymbols={mainSymbols} />
               ))}
             </div>
           )}
@@ -342,7 +359,7 @@ export default function History() {
   );
 }
 
-const HistoryCard = memo(function HistoryCard({ e }: { e: JournalEntry }) {
+const HistoryCard = memo(function HistoryCard({ e, mainSymbols }: { e: JournalEntry; mainSymbols: Set<string> }) {
   const meta = STATUS_META[e.status];
   const coinHref = `/coin/${e.symbol}`;
   const entry =
@@ -358,6 +375,9 @@ const HistoryCard = memo(function HistoryCard({ e }: { e: JournalEntry }) {
       aria-label={`${e.symbol} ${e.direction} signal, ${e.status}, strength ${e.strength}`}
       className="flex min-w-0 flex-col rounded-2xl border border-slate-800 bg-slate-900/70 break-words"
     >
+      <p className="border-b border-slate-800/50 px-4 pt-2.5 text-[10px] font-extrabold tracking-[0.22em] text-slate-500">
+        <CategoryChip symbol={e.symbol} mainSymbols={mainSymbols} className="border-0 bg-transparent p-0" />
+      </p>
       {/* Header: coin + direction + result. Navigates to the coin (always known). */}
       <Link
         to={coinHref}
@@ -509,23 +529,5 @@ function SkeletonGrid() {
       </div>
       <span className="sr-only">Loading signal history…</span>
     </div>
-  );
-}
-
-function FilterGroup({ label, options, value, onPick }: { label: string; options: string[]; value: string; onPick: (v: string) => void }) {
-  return (
-    <span className="inline-flex flex-wrap items-center gap-1.5" role="group" aria-label={`${label} filter`}>
-      <span className="font-bold tracking-widest text-slate-500 uppercase">{label}</span>
-      {options.map((o) => (
-        <button
-          key={o}
-          onClick={() => onPick(o)}
-          aria-pressed={value === o}
-          className={cn("min-h-[44px] rounded-lg border px-3 font-bold", value === o ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" : "border-slate-800 text-slate-500 hover:border-slate-700")}
-        >
-          {o === "24H" ? "24h" : o === "7D" ? "7d" : o === "30D" ? "30d" : o}
-        </button>
-      ))}
-    </span>
   );
 }

@@ -1,4 +1,4 @@
-import { eventMessage, type SignalEvent } from "./events";
+import { eventCategoryLabel, eventMessage, type SignalEvent } from "./events";
 
 /**
  * NotificationProvider abstraction — future providers plug in here:
@@ -44,12 +44,14 @@ export class BrowserNotificationProvider implements NotificationProvider {
     if (!this.isAvailable()) return;
     try {
       const s = event.signal;
-      const n = new Notification(`CryptoIn — NEW ${event.symbol} ${event.direction} SETUP`, {
+      const cat = eventCategoryLabel(event);
+      const arrow = event.direction === "LONG" ? "📈" : "📉";
+      const n = new Notification(`${arrow} ${cat} ${event.direction} — ${event.symbol}`, {
         body:
-          `Strength: ${event.currentStrength}\n` +
+          `Score ${event.currentStrength}\n` +
           `Entry: ${s.entryLow ?? "—"} – ${s.entryHigh ?? "—"}\n` +
-          `Invalidation: ${s.invalidation ?? "—"}\n` +
-          `TP1: ${s.tp1 ?? "—"}`,
+          `SL: ${s.invalidation ?? "—"} · TP1: ${s.tp1 ?? "—"}\n` +
+          `R:R ${s.riskReward ?? "—"}`,
         tag: event.id,
       });
       n.onclick = () => {
@@ -105,7 +107,7 @@ export class SoundAlertProvider implements NotificationProvider {
 export function formatTelegramMessage(event: SignalEvent): string {
   const s = event.signal;
   const lines = [
-    "🚨 NEW CRYPTO SIGNAL",
+    `🚨 NEW ${eventCategoryLabel(event)} SIGNAL`,
     "",
     event.symbol,
     event.direction,

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
   ArrowUpFromDot,
@@ -26,9 +26,11 @@ import { DiagnosticsPanel, isDevDiagnosticsEnabled } from "../DiagnosticsPanel";
 import {
   alertCoinNavigation,
   eventMessage,
+  loadAlertSettings,
   markAlertRead,
   markAllAlertsRead,
   subscribeAlerts,
+  subscribeAlertSettings,
   type SignalEvent,
 } from "../../alerts";
 
@@ -124,8 +126,11 @@ export default function AppLayout() {
   const [notes, setNotes] = useState<SignalEvent[]>([]);
   const { markets } = useMarkets();
   const navigate = useNavigate();
+  const [, bumpSettings] = useReducer((x: number) => x + 1, 0);
 
   useEffect(() => subscribeAlerts(setNotes), []);
+  useEffect(() => subscribeAlertSettings(bumpSettings), [bumpSettings]);
+  const showBell = loadAlertSettings().inAppNotifications;
   const unread = notes.filter((n) => !n.read).length;
 
   return (
@@ -208,6 +213,7 @@ export default function AppLayout() {
               <ConnectionBadge />
               <AccountChip />
               <InstallAppButton />
+              {showBell && (
               <div className="relative">
                 <button
                   aria-label="Signal notifications"
@@ -264,6 +270,7 @@ export default function AppLayout() {
                   </div>
                 )}
               </div>
+              )}
             </div>
           </div>
         </header>

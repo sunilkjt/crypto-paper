@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { Bitcoin } from "lucide-react";
 import {
@@ -7,6 +8,7 @@ import {
   PageHeader,
 } from "../components/ui";
 import { FreshnessLabel, LiveBadge } from "../components/LiveBadge";
+import { CategoryChip } from "../components/SignalCard";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { timeAgo } from "../components/NewsList";
 import { useMarkets } from "../market/store";
@@ -82,7 +84,11 @@ function AiMarketRegime({ markets }: { markets: Market[] }) {
 
 function ScanHighlights() {
   const { summary, scanning, pausedStale } = useScan();
-  const { connection, lastSuccessAt, updatedAt } = useMarkets();
+  const { connection, lastSuccessAt, updatedAt, markets } = useMarkets();
+  const mainSymbols = useMemo(
+    () => new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase())),
+    [markets],
+  );
   const results = summary?.results ?? [];
   const longs = results.filter((r) => r.signal.direction === "LONG").slice(0, 5);
   const shorts = results.filter((r) => r.signal.direction === "SHORT").slice(0, 5);
@@ -118,10 +124,10 @@ function ScanHighlights() {
             </div>
           )}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <HighlightCard title="High-Confluence Longs" to="/scanner" rows={longs} empty={scanning ? "Scoring…" : "None right now"} />
-            <HighlightCard title="High-Confluence Shorts" to="/scanner" rows={shorts} empty={scanning ? "Scoring…" : "None right now"} />
-            <HighlightCard title="Bounce Setups" to="/bounce" rows={bounces} empty={scanning ? "Scoring…" : "None detected"} />
-            <HighlightCard title="Breakout Setups" to="/scanner" rows={breakouts} empty={scanning ? "Scoring…" : "None detected"} />
+            <HighlightCard title="High-Confluence Longs" to="/scanner" rows={longs} empty={scanning ? "Scoring…" : "None right now"} mainSymbols={mainSymbols} />
+            <HighlightCard title="High-Confluence Shorts" to="/scanner" rows={shorts} empty={scanning ? "Scoring…" : "None right now"} mainSymbols={mainSymbols} />
+            <HighlightCard title="Bounce Setups" to="/bounce" rows={bounces} empty={scanning ? "Scoring…" : "None detected"} mainSymbols={mainSymbols} />
+            <HighlightCard title="Breakout Setups" to="/scanner" rows={breakouts} empty={scanning ? "Scoring…" : "None detected"} mainSymbols={mainSymbols} />
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-2.5 text-xs text-slate-400">
             <span className="font-bold tracking-widest text-slate-500 uppercase">Market Data Status</span>
@@ -143,11 +149,13 @@ function HighlightCard({
   to,
   rows,
   empty,
+  mainSymbols,
 }: {
   title: string;
   to: string;
   rows: { symbol: string; signal: { direction: string; signalStrength: number } }[];
   empty: string;
+  mainSymbols: Set<string>;
 }) {
   return (
     <Card className="p-4">
@@ -161,10 +169,13 @@ function HighlightCard({
         <ul className="space-y-1.5">
           {rows.map((r) => (
             <li key={r.symbol}>
-              <Link to={`/coin/${r.symbol}`} className="flex items-center justify-between rounded-lg border border-slate-800/60 px-2.5 py-1.5 hover:border-slate-700">
-                <span className="text-xs font-bold text-white">{r.symbol}</span>
-                <span className={cn("font-mono text-xs", r.signal.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>
-                  {r.signal.signalStrength}
+              <Link to={`/coin/${r.symbol}`} className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-slate-800/60 px-2.5 py-1.5 hover:border-slate-700">
+                <span className="min-w-0 truncate text-xs font-bold text-white">{r.symbol}</span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <CategoryChip symbol={r.symbol} mainSymbols={mainSymbols} />
+                  <span className={cn("font-mono text-xs", r.signal.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>
+                    {r.signal.signalStrength}
+                  </span>
                 </span>
               </Link>
             </li>
@@ -176,6 +187,11 @@ function HighlightCard({
 }
 
 function RecentSignalsList() {
+  const { markets } = useMarkets();
+  const mainSymbols = useMemo(
+    () => new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase())),
+    [markets],
+  );
   const entries = loadJournal()
     .sort((a, b) => b.lastSeen - a.lastSeen)
     .slice(0, 8);
@@ -185,8 +201,9 @@ function RecentSignalsList() {
   return (
     <ul className="divide-y divide-slate-800/60">
       {entries.map((e) => (
-        <li key={e.id} className="flex items-center gap-2 px-5 py-2 text-xs">
-          <Link to={`/coin/${e.symbol}`} className="font-bold text-white hover:text-cyan-300">{e.symbol}</Link>
+        <li key={e.id} className="flex min-w-0 flex-wrap items-center gap-2 px-5 py-2 text-xs">
+          <CategoryChip symbol={e.symbol} mainSymbols={mainSymbols} />
+          <Link to={`/coin/${e.symbol}`} className="font-bold break-words text-white hover:text-cyan-300">{e.symbol}</Link>
           <span className={cn("font-bold", e.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>{e.direction}</span>
           <span className="font-mono text-slate-400">{e.strength}</span>
           <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">{e.status}</span>

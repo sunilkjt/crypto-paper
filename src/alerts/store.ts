@@ -1,5 +1,8 @@
 import { emitNotification } from "../signals/notifications";
-import { eventMessage, type AlertStatus, type SignalEvent } from "./events";
+import { eventMessage, resolveEventCategory, type AlertStatus, type SignalEvent } from "./events";
+import { fingerprintOf, markNotified, shouldDeliver } from "./cooldown";
+import { loadAlertSettings } from "./settings";
+import type { MarketClass } from "../market/classify";
 import type { NotificationProvider } from "./providers";
 
 /**
@@ -25,6 +28,8 @@ export interface AlertFilters {
   coin: string; // "ALL" or symbol
   direction: "ALL" | "LONG" | "SHORT";
   event: "ALL" | SignalEvent["type"];
+  /** Omitted (legacy callers) behaves as "ALL". */
+  category?: "ALL" | MarketClass;
   sinceMs: number | null;
 }
 
@@ -32,6 +37,7 @@ export const EMPTY_ALERT_FILTERS: AlertFilters = {
   coin: "ALL",
   direction: "ALL",
   event: "ALL",
+  category: "ALL",
   sinceMs: null,
 };
 
@@ -114,7 +120,24 @@ export function ingestAlertEvents(incoming: SignalEvent[]): SignalEvent[] {
     }
   }
   write(merged);
+  // Delivery-only cooldown: history + in-app state record everything, but
+  // browser/sound/telegram fire only for facts outside the suppression
+  // window. Settings are read once per batch.
+  const cooldownMs = loadAlertSettings().cooldownMs;
+  const now = Date.now();
   for (const e of fresh) {
+    const fp = fingerprintOf({
+      type: e.type,
+      category: resolveEventCategory(e),
+      symbol: e.symbol,
+      direction: e.direction,
+      timeframe: e.timeframe,
+      entryLow: e.signal.entryLow,
+      entryHigh: e.signal.entryHigh,
+      strength: e.currentStrength,
+    });
+    if (!shouldDeliver(fp, now, cooldownMs)) continue;
+    markNotified(fp, now);
     for (const p of providers) {
       try {
         if (p.isAvailable()) p.notify(e);
@@ -155,6 +178,7 @@ export function filterAlerts(events: SignalEvent[], f: AlertFilters): SignalEven
       (f.coin === "ALL" || e.symbol === f.coin) &&
       (f.direction === "ALL" || e.direction === f.direction) &&
       (f.event === "ALL" || e.type === f.event) &&
+      ((f.category ?? "ALL") === "ALL" || resolveEventCategory(e) === f.category) &&
       (f.sinceMs === null || e.timestamp >= f.sinceMs),
   );
 }

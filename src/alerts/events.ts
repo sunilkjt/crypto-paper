@@ -1,5 +1,6 @@
 import type { Signal } from "../analysis/signal";
 import type { SetupType } from "../signals/setupType";
+import { CATEGORY_LABEL, type MarketClass } from "../market/classify";
 
 /**
  * Signal events — the monitor's vocabulary. Stable IDs dedupe everything:
@@ -29,13 +30,33 @@ export interface SignalEvent {
   timeframe: string;
   previousStrength: number | null;
   currentStrength: number;
-  /** TP1/TP2/TP3/entry/invalidation for TARGET_REACHED/ENTRY_REACHED. */
+  /** TP1/TP2/3/entry/invalidation for TARGET_REACHED/ENTRY_REACHED. */
   detail: string | null;
   status: AlertStatus;
   timestamp: number;
   signal: Signal;
   watched: boolean;
   read: boolean;
+  /**
+   * Market class at emission time. Optional so pre-feature stored events
+   * stay readable — readers fall back to eventCategoryLabel().
+   */
+  category?: MarketClass;
+}
+
+/**
+ * Resolved class for an event. Explicit category (set at emission with live
+ * market data) wins; legacy stored events without one fall back to a neutral
+ * rule that never silently claims CRYPTO for a dex-prefixed symbol.
+ */
+export function resolveEventCategory(e: Pick<SignalEvent, "symbol" | "category">): MarketClass {
+  if (e.category) return e.category;
+  return e.symbol.includes(":") ? "other" : "crypto";
+}
+
+/** Display label for an event's class (text, never color-only). */
+export function eventCategoryLabel(e: Pick<SignalEvent, "symbol" | "category">): string {
+  return CATEGORY_LABEL[resolveEventCategory(e)];
 }
 
 /** Stable event ID: repeats of the same fact share one ID. */
@@ -49,23 +70,27 @@ export function stableEventId(args: {
   return parts.join("::");
 }
 
-export function eventMessage(e: Pick<SignalEvent, "type" | "symbol" | "direction" | "currentStrength" | "detail">): string {
+export function eventMessage(
+  e: Pick<SignalEvent, "type" | "symbol" | "direction" | "currentStrength" | "detail"> & { category?: SignalEvent["category"] },
+): string {
+  const cat = eventCategoryLabel({ symbol: e.symbol, category: e.category });
+  const head = `${cat} ${e.direction === "LONG" ? "📈" : "📉"}`;
   switch (e.type) {
     case "NEW_SIGNAL":
-      return `NEW ${e.symbol} ${e.direction} — strength ${e.currentStrength}.`;
+      return `${head} — NEW ${e.symbol} ${e.direction}, score ${e.currentStrength}.`;
     case "SIGNAL_STRENGTHENED":
-      return `${e.symbol} ${e.direction} strengthened to ${e.currentStrength}.`;
+      return `${head} — ${e.symbol} ${e.direction} strengthened to ${e.currentStrength}.`;
     case "SIGNAL_WEAKENED":
-      return `${e.symbol} ${e.direction} weakened to ${e.currentStrength}.`;
+      return `${head} — ${e.symbol} ${e.direction} weakened to ${e.currentStrength}.`;
     case "SIGNAL_INVALIDATED":
-      return `${e.symbol} ${e.direction} invalidated.`;
+      return `${head} — ${e.symbol} ${e.direction} invalidated.`;
     case "TARGET_REACHED":
-      return `${e.symbol} ${e.direction} reached ${e.detail ?? "target"}.`;
+      return `${head} — ${e.symbol} ${e.direction} reached ${e.detail ?? "target"}.`;
     case "ENTRY_REACHED":
-      return `${e.symbol} ${e.direction} reached entry zone.`;
+      return `${head} — ${e.symbol} ${e.direction} reached entry zone.`;
     case "BOUNCE_DETECTED":
-      return `Bounce setup: ${e.symbol} ${e.direction} — strength ${e.currentStrength}.`;
+      return `${head} — bounce setup ${e.symbol} ${e.direction}, score ${e.currentStrength}.`;
     case "BREAKOUT_DETECTED":
-      return `Breakout setup: ${e.symbol} ${e.direction} — strength ${e.currentStrength}.`;
+      return `${head} — breakout setup ${e.symbol} ${e.direction}, score ${e.currentStrength}.`;
   }
 }

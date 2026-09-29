@@ -7,6 +7,7 @@ import { usePaperCloudSync } from "../supabase/usePaperCloudSync";
 import { getSupabase } from "../supabase/client";
 import { useAuth } from "../supabase/auth";
 import { useMarkets } from "../market/store";
+import { CategoryChip } from "../components/SignalCard";
 import { useScan } from "../scanner";
 import { useCandles } from "../market/useCandles";
 import {
@@ -49,6 +50,10 @@ export default function PaperTrading() {
     }
     return m;
   }, [markets]);
+  const mainSymbols = useMemo(
+    () => new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase())),
+    [markets],
+  );
 
   // Cloud sync (multi-device): same login => same balance/positions/history.
   // Engine math untouched; this only persists + rehydrates snapshots.
@@ -312,7 +317,7 @@ export default function PaperTrading() {
                     const r = p.risk > 0 ? unreal / p.risk : 0;
                     return (
                       <tr key={p.id} className={cn("border-b border-slate-800/50 font-mono last:border-0 hover:bg-slate-900/50", selected?.id === p.id && "bg-slate-900/70")}>
-                        <td className="px-3 py-2"><button onClick={() => setSelectedId(p.id)} className="font-bold text-white hover:text-cyan-300">{p.symbol}</button><span className="ml-1 text-[10px] text-slate-500">{p.status}</span></td>
+                        <td className="px-3 py-2"><button onClick={() => setSelectedId(p.id)} className="font-bold text-white hover:text-cyan-300">{p.symbol}</button><span className="ml-1 text-[10px] text-slate-500">{p.status}</span><span className="mt-0.5 block w-fit"><CategoryChip symbol={p.symbol} mainSymbols={mainSymbols} /></span></td>
                         <td className={cn("px-3 py-2 font-bold", p.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>{p.direction}</td>
                         <td className="px-3 py-2 text-slate-300">{fmt(p.entry)}</td>
                         <td className="px-3 py-2 text-slate-100">{fmt(mark)}</td>
@@ -367,7 +372,7 @@ export default function PaperTrading() {
                 {history.map((p) => (
                   <tr key={p.id} className="border-b border-slate-800/50 font-mono last:border-0 hover:bg-slate-900/50">
                     <td className="px-3 py-2 whitespace-nowrap text-slate-400">{new Date(p.openedAt).toLocaleString()}</td>
-                    <td className="px-3 py-2 font-bold text-white">{p.symbol}</td>
+                    <td className="px-3 py-2 font-bold text-white">{p.symbol}<span className="mt-0.5 block w-fit font-sans font-normal"><CategoryChip symbol={p.symbol} mainSymbols={mainSymbols} /></span></td>
                     <td className={cn("px-3 py-2 font-bold", p.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>{p.direction}</td>
                     <td className="px-3 py-2 text-slate-300">{fmt(p.entry)}</td>
                     <td className="px-3 py-2 text-slate-300">{p.closeReason ?? p.status}</td>

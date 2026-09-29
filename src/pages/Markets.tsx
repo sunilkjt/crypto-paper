@@ -6,9 +6,28 @@ import { FreshnessLabel } from "../components/LiveBadge";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { timeAgo } from "../components/NewsList";
 import { useMarkets } from "../market/store";
-import { classifyMarket, type MarketClass } from "../market/classify";
+import { classifyMarket, type MarketCategory } from "../market/classify";
 import { DEFAULT_ELIGIBILITY, runFullScan, type ScanSummary } from "../scanner";
+import {
+  loadJournal,
+  nextLifecycleState,
+  upsertJournalSignal,
+  type SignalLifecycleState,
+} from "../signals";
+import {
+  ingestAlertEvents,
+  loadAlertSettings,
+  setAlertProviders,
+} from "../alerts";
+import { evaluateScan, evaluateTargets, type MonitorSnapshot } from "../alerts/monitor";
 import { addWatched, isWatched, loadWatchlist, removeWatched } from "../alerts/watchlist";
+import { isExpired, DEFAULT_MAX_SIGNAL_AGE_MS } from "../alerts/expiry";
+import {
+  BrowserNotificationProvider,
+  SoundAlertProvider,
+  TelegramNotificationProvider,
+  telegramEndpointFromEnv,
+} from "../alerts/providers";
 import { cn } from "../lib/cn";
 
 type Category = "stocks" | "commodities";
@@ -75,11 +94,16 @@ export default function Markets() {
 
   const prices = useMemo(() => new Map(markets.map((m) => [m.symbol, m])), [markets]);
 
+  const prevIdsRef = useRef(new Map<string, MonitorSnapshot>());
+  const soundRef = useRef<SoundAlertProvider | null>(null);
+
   const runScan = useCallback(async () => {
+    if (category === null) return;
+    const active: MarketCategory = category;
     const snapshot = marketsRef.current;
     const main = new Set(snapshot.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase()));
-    const all = snapshot.filter((m) => classifyMarket(m.symbol, main) === (category as MarketClass));
-    if (category === null || all.length === 0 || stale) return;
+    const all = snapshot.filter((m) => classifyMarket(m.symbol, main) === active);
+    if (all.length === 0 || stale) return;
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -96,6 +120,79 @@ export default function Markets() {
       });
       if (ctrl.signal.aborted) return;
       setSummary(result);
+
+      // Local monitor pass: lifecycle + journal + alerts for THIS page's
+      // results only. Own prevIds snapshot — the crypto ScanProvider never
+      // sees these and vice versa. Never throws into the scan path.
+      try {
+        const alertSettings = loadAlertSettings();
+        if (!soundRef.current) soundRef.current = new SoundAlertProvider();
+        setAlertProviders([
+          new BrowserNotificationProvider(),
+          soundRef.current,
+          new TelegramNotificationProvider(telegramEndpointFromEnv()),
+        ]);
+        const watchlist = loadWatchlist();
+        const marks = new Map(all.map((m) => [m.symbol, m.markPrice]));
+        const monitorCtx = {
+          marks,
+          watchlist,
+          settings: alertSettings,
+          now: Date.now(),
+          mainDexSymbols: main,
+        };
+        const seen = new Map<string, MonitorSnapshot>();
+        const lifecycleById = new Map<string, string>();
+        const journalEntries = loadJournal();
+        for (const r of result.results) {
+          if (!r.id || r.signal.direction === "WAIT") continue;
+          const prev = journalEntries.find((e) => e.id === r.id);
+          const price = marks.get(r.symbol) ?? null;
+          const prevState =
+            (prev?.status ?? prevIdsRef.current.get(r.id)?.status ?? null) as SignalLifecycleState | null;
+          const prevStrength = prev?.strength ?? prevIdsRef.current.get(r.id)?.strength ?? null;
+          const status = nextLifecycleState({
+            previous: prevState,
+            previousStrength: prevStrength,
+            strength: r.signal.signalStrength,
+            price,
+            invalidation: r.signal.invalidation,
+            tp3: r.signal.tp3,
+            direction: r.signal.direction,
+          });
+          const firstSeen = prev?.firstSeen ?? Date.now();
+          const expired = isExpired({ firstSeen, strength: r.signal.signalStrength, now: Date.now(), maxAgeMs: DEFAULT_MAX_SIGNAL_AGE_MS });
+          const finalStatus = expired ? "EXPIRED" : status;
+          upsertJournalSignal({
+            id: r.id,
+            symbol: r.symbol,
+            direction: r.signal.direction,
+            setupType: r.setupType,
+            timeframe: r.signal.timeframe,
+            entryLow: r.signal.entryLow,
+            entryHigh: r.signal.entryHigh,
+            invalidation: r.signal.invalidation,
+            tp1: r.signal.tp1,
+            tp2: r.signal.tp2,
+            tp3: r.signal.tp3,
+            riskReward: r.signal.riskReward,
+            strength: r.signal.signalStrength,
+            quality: r.quality,
+            status: finalStatus,
+            outcome: prev?.outcome ?? null,
+            newsHeadlines: [],
+            dataTimestamp: r.signal.dataTimestamp,
+          });
+          lifecycleById.set(r.id, finalStatus);
+          seen.set(r.id, { status: finalStatus, strength: r.signal.signalStrength });
+        }
+        const scanEvents = evaluateScan(prevIdsRef.current, result.results, lifecycleById, monitorCtx);
+        const targetEvents = evaluateTargets(result.results, marks, monitorCtx);
+        ingestAlertEvents([...scanEvents, ...targetEvents]);
+        prevIdsRef.current = seen;
+      } catch {
+        // monitor/journal/alerts never break scanning
+      }
     } catch (err) {
       if (ctrl.signal.aborted) return;
       setScanError(err instanceof Error && err.message ? err.message : "Market data connection is temporarily unavailable.");
@@ -125,12 +222,16 @@ export default function Markets() {
   // Unmount: stop all expensive work.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // Selecting a category NEVER scans: the panel offers an explicit
+  // [Scan Stocks] / [Scan Commodities] button (also required on return
+  // visits with a restored selection).
   const selectCategory = (c: Category) => {
     try {
       localStorage?.setItem(CATEGORY_KEY, c);
     } catch {
       // best effort
     }
+    abortRef.current?.abort();
     setSummary(null);
     setScanError(null);
     setPage(0);
@@ -138,7 +239,7 @@ export default function Markets() {
     setDirFilter("ALL");
     setCategory(c);
     setPaused(false);
-    setStarted(true);
+    setStarted(false);
   };
 
   const filtered = useMemo(() => {
@@ -331,14 +432,62 @@ export default function Markets() {
                   <span className="sr-only">Scanning markets…</span>
                 </div>
               ) : (
-                <p className="px-2 py-8 text-center text-sm text-slate-500">
-                  {category === "stocks" ? "Stocks" : "Commodities"} selected — press Start Scan when ready.
-                </p>
+                <div className="py-8 text-center">
+                  <p className="text-sm font-extrabold tracking-wide text-white">
+                    {category === "stocks" ? "STOCKS" : "COMMODITIES"}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-300">Ready to scan.</p>
+                  <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">
+                    No {category === "stocks" ? "stock" : "commodity"} markets are being scanned yet.
+                  </p>
+                  <button
+                    onClick={() => {
+                      setStarted(true);
+                      setRunId((n) => n + 1);
+                    }}
+                    className="mt-4 min-h-[48px] rounded-xl bg-cyan-500 px-8 text-sm font-bold text-slate-950 hover:bg-cyan-400 focus-visible:outline-2 focus-visible:outline-cyan-300"
+                  >
+                    {category === "stocks" ? "Scan Stocks" : "Scan Commodities"}
+                  </button>
+                </div>
               )
             ) : rows.length === 0 ? (
-              <p className="px-2 py-8 text-center text-sm text-slate-500">
-                {summary.scanned === 0 ? "No supported markets found." : "No signals match these filters."}
-              </p>
+              <div className="py-8 text-center">
+                {summary.scanned === 0 ? (
+                  <>
+                    <p className="text-sm font-semibold text-slate-200">
+                      No Hyperliquid {category === "stocks" ? "stock" : "commodity"} markets are currently available.
+                    </p>
+                    <button
+                      onClick={() => setRunId((n) => n + 1)}
+                      className="mt-3 min-h-[44px] rounded-xl border border-slate-700 px-5 text-xs font-bold text-slate-200 hover:bg-slate-800"
+                    >
+                      Retry
+                    </button>
+                  </>
+                ) : query.trim() !== "" || dirFilter !== "ALL" ? (
+                  <>
+                    <p className="text-sm font-semibold text-slate-200">No signals match these filters.</p>
+                    <button
+                      onClick={() => {
+                        setQuery("");
+                        setDirFilter("ALL");
+                        setPage(0);
+                      }}
+                      className="mt-3 min-h-[44px] rounded-xl border border-slate-700 px-5 text-xs font-bold text-slate-200 hover:bg-slate-800"
+                    >
+                      Clear Filters
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm font-semibold text-slate-200">
+                      No qualifying {category === "stocks" ? "stock" : "commodity"} signals found.
+                    </p>
+                    <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">Try another scan later.</p>
+                  </>
+                )}
+              </div>
             ) : (
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {rows.map((r) => (
@@ -348,6 +497,7 @@ export default function Markets() {
                     market={prices.get(r.symbol) ?? null}
                     watched={watchlist.includes(r.symbol)}
                     onToggleStar={toggleStar}
+                    category={category}
                   />
                 ))}
               </div>

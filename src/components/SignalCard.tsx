@@ -4,6 +4,7 @@ import { SignalAiButton } from "./SignalAiButton";
 import type { ScannedCoin } from "../scanner/engine";
 import type { Market } from "../market/hyperliquid/types";
 import type { StrengthClass } from "../analysis/scoring";
+import { CATEGORY_LABEL, classifyMarket, type MarketCategory } from "../market/classify";
 import { formatChangePct, formatPrice, formatVolumeNotional } from "../lib/format";
 import { formatFundingRate } from "../market/hyperliquid/funding";
 import { formatOpenInterestNotional } from "../market/hyperliquid/openInterest";
@@ -47,13 +48,47 @@ function money(v: number | null, symbol: string): string {
   return v === null ? "—" : `$${formatPrice(v, symbol)}`;
 }
 
+/**
+ * Text category chip (never color-only). `mainSymbols` is the live main-dex
+ * set for the crypto-mirror rule; callers that already know the category
+ * (Markets page) pass it via `category` — explicit wins over derivation.
+ */
+export function CategoryChip({
+  symbol,
+  mainSymbols,
+  category,
+  className,
+}: {
+  symbol: string;
+  mainSymbols?: Set<string>;
+  category?: MarketCategory | "other";
+  className?: string;
+}) {
+  const cat = category ?? classifyMarket(symbol, mainSymbols ?? new Set<string>());
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border border-slate-700 bg-slate-800/70 px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wider text-slate-300",
+        className,
+      )}
+      title={`Market category: ${CATEGORY_LABEL[cat]}`}
+    >
+      {CATEGORY_LABEL[cat]}
+    </span>
+  );
+}
+
 export const SignalCard = memo(function SignalCard({
-  r, market, watched, onToggleStar,
+  r, market, watched, onToggleStar, category, mainSymbols,
 }: {
   r: ScannedCoin;
   market: Market | null;
   watched: boolean;
   onToggleStar: (symbol: string) => void;
+  /** Explicit category (Markets page) — derived from markets when omitted. */
+  category?: MarketCategory | "other";
+  /** Live main-dex set for derivation when `category` is omitted. */
+  mainSymbols?: Set<string>;
 }) {
   const s = r.signal;
   const dir = DIR_META[s.direction];
@@ -74,6 +109,9 @@ export const SignalCard = memo(function SignalCard({
       aria-label={`${r.symbol} ${s.direction} signal, score ${s.signalStrength}`}
       className="flex min-w-0 flex-col rounded-2xl border border-slate-800 bg-slate-900/70 break-words"
     >
+      <p className="border-b border-slate-800/50 px-4 pt-2.5 text-[10px] font-extrabold tracking-[0.22em] text-slate-500">
+        <CategoryChip symbol={r.symbol} category={category} mainSymbols={mainSymbols} className="border-0 bg-transparent p-0" />
+      </p>
       {/* Header: star + coin/direction (whole row navigates except the star). */}
       <div className="flex items-stretch gap-1 border-b border-slate-800/80 px-2 py-2">
         <button
@@ -220,7 +258,20 @@ function TechRow({ label, value, mono = false }: { label: string; value: string;
   );
 }
 
-export function FilterGroup({ label, options, value, onPick }: { label: string; options: string[]; value: string; onPick: (v: string) => void }) {
+export function FilterGroup({
+  label,
+  options,
+  value,
+  onPick,
+  labels,
+}: {
+  label: string;
+  options: string[];
+  value: string;
+  onPick: (v: string) => void;
+  /** Optional display overrides keyed by option value. */
+  labels?: Record<string, string>;
+}) {
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5" role="group" aria-label={`${label} filter`}>
       <span className="font-bold tracking-widest text-slate-500 uppercase">{label}</span>
@@ -231,7 +282,7 @@ export function FilterGroup({ label, options, value, onPick }: { label: string; 
           aria-pressed={value === o}
           className={cn("min-h-[44px] rounded-lg border px-3 font-bold", value === o ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" : "border-slate-800 text-slate-500 hover:border-slate-700")}
         >
-          {o}
+          {labels?.[o] ?? o}
         </button>
       ))}
     </span>
