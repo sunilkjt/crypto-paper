@@ -16,6 +16,8 @@ export interface AlertSettings {
   browserNotifications: boolean;
   soundAlerts: boolean;
   watchlistOnly: boolean;
+  /** Master switch for Telegram delivery (endpoint + connection still required). */
+  telegramNotifications: boolean;
   inAppNotifications: boolean;
   categories: { crypto: boolean; stocks: boolean; commodities: boolean };
   /** Duplicate-fact suppression window (0 = off). Default 30 minutes. */
@@ -30,6 +32,7 @@ export const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   browserNotifications: false,
   soundAlerts: false,
   watchlistOnly: false,
+  telegramNotifications: false,
   inAppNotifications: true,
   categories: { crypto: true, stocks: true, commodities: true },
   cooldownMs: 1_800_000,
@@ -81,6 +84,7 @@ export function loadAlertSettings(): AlertSettings {
       browserNotifications: parsed.browserNotifications === true,
       soundAlerts: parsed.soundAlerts === true,
       watchlistOnly: parsed.watchlistOnly === true,
+      telegramNotifications: parsed.telegramNotifications === true,
       inAppNotifications: parsed.inAppNotifications !== false,
       categories:
         cats && typeof cats === "object"

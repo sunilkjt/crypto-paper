@@ -8,7 +8,8 @@ import {
   saveAlertSettings,
   type AlertSettings,
 } from "../alerts";
-import { BrowserNotificationProvider, TelegramNotificationProvider, telegramEndpointFromEnv } from "../alerts/providers";
+import { BrowserNotificationProvider } from "../alerts/providers";
+import { TelegramPanel } from "../components/TelegramPanel";
 import { AI_AUTO_MIN_STRENGTH, setAiMode, useAiMode, type AiMode } from "../ai";
 import { useScan, REFRESH_OPTIONS } from "../scanner";
 import { cn } from "../lib/cn";
@@ -93,7 +94,6 @@ export default function Settings() {
     }
   });
   const { refreshMs, setRefreshMs } = useScan();
-  const telegram = new TelegramNotificationProvider(telegramEndpointFromEnv());
 
   const patch = (p: Partial<AlertSettings>) => {
     setAlerts((prev) => {
@@ -158,13 +158,14 @@ export default function Settings() {
           />
           <Row
             label="Telegram"
-            desc="Server-side delivery only — no token ever lives here"
-            control={
-              <span className={cn("rounded-full border px-3 py-1 text-[11px] font-bold", telegram.status().configured ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-slate-700 text-slate-400")}>
-                {telegram.status().label}
-              </span>
-            }
+            desc="Secure edge-function delivery — no token ever lives here"
+            control={<Toggle label="Toggle Telegram notifications" on={alerts.telegramNotifications} onClick={() => patch({ telegramNotifications: !alerts.telegramNotifications })} />}
           />
+        </Card>
+
+        <Card>
+          <CardHeader title="Telegram Pairing" subtitle="One-time link, bound to your cloud account" />
+          <TelegramPanel alerts={alerts} />
         </Card>
 
         <Card>

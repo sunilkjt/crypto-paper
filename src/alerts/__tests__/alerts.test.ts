@@ -147,7 +147,7 @@ describe("providers", () => {
 
   it("telegram formats the spec message without secrets", () => {
     const msg = formatTelegramMessage(event());
-    for (const needle of ["NEW CRYPTO SIGNAL", "OP", "LONG", "82/100", "TP1", "R:R", "Reasons:", "Risk:", "not a probability"]) {
+    for (const needle of ["📈", "CRYPTO", "LONG", "OP", "82/100", "TP1", "R:R", "Timeframe:", "Reasons:", "Risk:", "not a probability"]) {
       expect(msg).toContain(needle);
     }
     const tg = new TelegramNotificationProvider("");

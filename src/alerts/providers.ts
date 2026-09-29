@@ -1,4 +1,5 @@
 import { eventCategoryLabel, eventMessage, type SignalEvent } from "./events";
+import { loadAlertSettings } from "./settings";
 
 /**
  * NotificationProvider abstraction — future providers plug in here:
@@ -103,35 +104,36 @@ export class SoundAlertProvider implements NotificationProvider {
   }
 }
 
-/** Telegram message format for future secure-backend delivery. */
+/**
+ * Build the coin-analysis URL for a symbol (HashRouter-safe, shared by the
+ * browser and Telegram providers). Symbol case is preserved as-is.
+ */
+export function analysisUrl(symbol: string): string {
+  try {
+    return `${window.location.origin}${window.location.pathname}#/coin/${symbol.trim()}`;
+  } catch {
+    return `#/coin/${symbol.trim()}`;
+  }
+}
+
+/** Telegram message format for secure-backend delivery (plain text only). */
 export function formatTelegramMessage(event: SignalEvent): string {
   const s = event.signal;
+  const arrow = event.direction === "LONG" ? "📈" : "📉";
   const lines = [
-    `🚨 NEW ${eventCategoryLabel(event)} SIGNAL`,
+    `${arrow} ${eventCategoryLabel(event)} ${event.direction}`,
     "",
     event.symbol,
-    event.direction,
     "",
-    "Signal strength:",
-    `${event.currentStrength}/100`,
+    `Score: ${event.currentStrength}/100`,
+    `Entry: ${s.entryLow ?? "—"} – ${s.entryHigh ?? "—"}`,
+    `Stop Loss: ${s.invalidation ?? "—"}`,
+    `TP1: ${s.tp1 ?? "—"}`,
+    `TP2: ${s.tp2 ?? "—"}`,
+    `TP3: ${s.tp3 ?? "—"}`,
+    `R:R: ${s.riskReward !== null && s.riskReward !== undefined ? `1 : ${s.riskReward}` : "—"}`,
     "",
-    "Entry:",
-    `${s.entryLow ?? "—"} – ${s.entryHigh ?? "—"}`,
-    "",
-    "Invalidation:",
-    `${s.invalidation ?? "—"}`,
-    "",
-    "TP1:",
-    `${s.tp1 ?? "—"}`,
-    "",
-    "TP2:",
-    `${s.tp2 ?? "—"}`,
-    "",
-    "TP3:",
-    `${s.tp3 ?? "—"}`,
-    "",
-    "R:R:",
-    `${s.riskReward ?? "—"}`,
+    `Timeframe: ${event.timeframe}`,
     "",
     "Setup:",
     eventMessage(event),
@@ -152,17 +154,44 @@ export interface TelegramStatus {
   label: "Connected" | "Not configured";
 }
 
+export interface TelegramDeps {
+  /** Supabase session JWT for the delivery endpoint (never a bot token). */
+  getSessionToken?: () => Promise<string | null>;
+  fetchFn?: typeof fetch;
+  openUrl?: (url: string) => void;
+}
+
+async function defaultSessionToken(): Promise<string | null> {
+  try {
+    const { getSupabase } = await import("../supabase/client");
+    const sb = getSupabase();
+    if (!sb) return null;
+    const { data } = await sb.auth.getSession();
+    return data.session?.access_token ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Telegram delivery stub: WITHOUT a backend endpoint it reports
- * Not configured and drops (never throws, never fabricates delivery).
- * WITH VITE_TELEGRAM_ENDPOINT it POSTs { message } server-side.
+ * Telegram delivery via the secure edge-function endpoint. The browser sends
+ * ONLY the formatted message + analysis URL + the user's session JWT; the
+ * chat_id always comes from the stored connection server-side and the bot
+ * token never leaves the server. Without an endpoint it reports Not
+ * configured and drops (never throws, never fabricates delivery).
  */
 export class TelegramNotificationProvider implements NotificationProvider {
   readonly name = "telegram" as const;
   private readonly endpoint: string;
+  private readonly deps: Required<TelegramDeps>;
 
-  constructor(endpoint = "") {
+  constructor(endpoint = "", deps: TelegramDeps = {}) {
     this.endpoint = endpoint.trim();
+    this.deps = {
+      getSessionToken: deps.getSessionToken ?? defaultSessionToken,
+      fetchFn: deps.fetchFn ?? fetch,
+      openUrl: deps.openUrl ?? ((url: string) => window.open(url, "_blank")?.focus()),
+    };
   }
 
   status(): TelegramStatus {
@@ -171,18 +200,36 @@ export class TelegramNotificationProvider implements NotificationProvider {
       : { configured: true, label: "Connected" };
   }
 
+  /** Endpoint configured AND the Telegram master switch on in settings. */
   isAvailable(): boolean {
-    return this.endpoint !== "";
+    if (this.endpoint === "") return false;
+    try {
+      return loadAlertSettings().telegramNotifications === true;
+    } catch {
+      return false;
+    }
   }
 
   notify(event: SignalEvent): void {
-    if (!this.isAvailable()) return;
+    if (this.endpoint === "") return;
     const message = formatTelegramMessage(event);
-    void fetch(this.endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, symbol: event.symbol, direction: event.direction }),
-    }).catch(() => undefined);
+    const url = analysisUrl(event.symbol);
+    void (async () => {
+      try {
+        const token = await this.deps.getSessionToken();
+        if (!token) return;
+        await this.deps.fetchFn(this.endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ message, url, symbol: event.symbol, direction: event.direction }),
+        }).catch(() => undefined);
+      } catch {
+        // delivery must never break the app
+      }
+    })();
   }
 }
 
