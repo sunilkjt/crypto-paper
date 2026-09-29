@@ -11,7 +11,7 @@ export {
 export { SYSTEM_PROMPT, buildUserPrompt } from "./prompts";
 export { validateAiResponse, isValidAiInput } from "./validate";
 export { buildAiInput } from "./input";
-export { aiCacheKey, getCachedAi, setCachedAi, clearAiCache, AI_CACHE_TTL_MS } from "./cache";
+export { aiCacheKey, aiSignalKey, getCachedAi, setCachedAi, clearAiCache, AI_CACHE_TTL_MS } from "./cache";
 export {
   dedupedRequest,
   markCalled,

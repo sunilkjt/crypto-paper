@@ -1,4 +1,4 @@
-import { aiCacheKey, getCachedAi, setCachedAi } from "./cache";
+import { aiSignalKey, getCachedAi, setCachedAi } from "./cache";
 import { validateAiResponse } from "./validate";
 import { AiUnavailableError, type AiAnalysis, type AiAnalysisInput, type AIProvider } from "./types";
 import { dedupedRequest, markCalled, throttleDelayMs } from "./ratelimit";
@@ -21,10 +21,7 @@ export async function getAiAnalysis(args: {
 }): Promise<{ status: AiStatus; analysis: AiAnalysis | null; provider: string; cached: boolean }> {
   const { input, timeframe } = args;
   const provider = args.provider ?? defaultProvider();
-  const key = aiCacheKey(input.symbol, timeframe, {
-    timestamp: input.analysisTimestamp,
-    dataTimestamp: input.marketDataTimestamp,
-  });
+  const key = aiSignalKey(input, timeframe);
 
   const cached = getCachedAi(key, input);
   if (cached) return { status: "ok", analysis: cached, provider: cached.provider, cached: true };

@@ -9,6 +9,17 @@ export function aiCacheKey(symbol: string, timeframe: string, signal: { timestam
   return `ai:${symbol.toUpperCase()}:${timeframe}:${signal.timestamp}:${signal.dataTimestamp}`;
 }
 
+/**
+ * Stable signal identity for cache/throttle/dedupe keys. Deliberately
+ * EXCLUDES analysisTimestamp (minted fresh on every input build): keying on
+ * it made every price tick look like a new signal, bypassing the cache and
+ * hammering the backend into rate limits. Ticks share the key (cache hit, no
+ * request); a new candle, direction, or strength mints a new key (refresh).
+ */
+export function aiSignalKey(input: AiAnalysisInput, timeframe: string): string {
+  return `ai:${input.symbol.toUpperCase()}:${timeframe}:${input.signalDirection}:${input.signalStrength}:${input.marketDataTimestamp}`;
+}
+
 export const AI_CACHE_TTL_MS = 15 * 60 * 1000;
 
 interface Entry {

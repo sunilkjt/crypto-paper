@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { getAiAnalysis, type AiAnalysis, type AiAnalysisInput } from "./index";
+import { aiSignalKey, getAiAnalysis, type AiAnalysis, type AiAnalysisInput } from "./index";
 
 /**
  * AI analysis for one structured input. Requests only when `enabled`
@@ -20,7 +20,9 @@ export function useAiAnalysis(
 ): AiHookState {
   const key = useMemo(() => {
     if (!input || !enabled) return null;
-    return `${input.symbol}:${timeframe}:${input.analysisTimestamp}:${input.marketDataTimestamp}`;
+    // Stable across price ticks (no analysisTimestamp): re-renders with the
+    // same signal reuse the cached explanation instead of refetching.
+    return aiSignalKey(input, timeframe);
   }, [input, timeframe, enabled]);
 
   const [state, setState] = useState<AiHookState>({
