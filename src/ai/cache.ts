@@ -10,14 +10,26 @@ export function aiCacheKey(symbol: string, timeframe: string, signal: { timestam
 }
 
 /**
- * Stable signal identity for cache/throttle/dedupe keys. Deliberately
- * EXCLUDES analysisTimestamp (minted fresh on every input build): keying on
- * it made every price tick look like a new signal, bypassing the cache and
- * hammering the backend into rate limits. Ticks share the key (cache hit, no
- * request); a new candle, direction, or strength mints a new key (refresh).
+ * Stable signal fingerprint for cache/throttle/dedupe keys. Covers identity
+ * (symbol, timeframe, direction), conviction (score), freshness (data
+ * timestamp) and the trade plan (entry, stop, TPs, R:R) — the meaningful
+ * signal state. Deliberately EXCLUDES analysisTimestamp (minted fresh on
+ * every input build) and the live price: a $108,240 → $108,245 wobble must
+ * NOT mint a new key. Ticks share the key (cache hit, no request); a plan,
+ * direction, score, or candle change mints a new one (refresh).
  */
 export function aiSignalKey(input: AiAnalysisInput, timeframe: string): string {
-  return `ai:${input.symbol.toUpperCase()}:${timeframe}:${input.signalDirection}:${input.signalStrength}:${input.marketDataTimestamp}`;
+  const n = (v: number | null): string => (v === null || !Number.isFinite(v) ? "—" : String(v));
+  const plan = [
+    n(input.entryLow),
+    n(input.entryHigh),
+    n(input.invalidation),
+    n(input.tp1),
+    n(input.tp2),
+    n(input.tp3),
+    n(input.riskReward),
+  ].join("/");
+  return `ai:${input.symbol.toUpperCase()}:${timeframe}:${input.signalDirection}:${input.signalStrength}:${input.marketDataTimestamp}:${plan}`;
 }
 
 export const AI_CACHE_TTL_MS = 15 * 60 * 1000;

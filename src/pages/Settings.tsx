@@ -8,6 +8,7 @@ import {
   type AlertSettings,
 } from "../alerts";
 import { BrowserNotificationProvider, TelegramNotificationProvider, telegramEndpointFromEnv } from "../alerts/providers";
+import { AI_AUTO_MIN_STRENGTH, setAiMode, useAiMode, type AiMode } from "../ai";
 import { useScan, REFRESH_OPTIONS } from "../scanner";
 import { cn } from "../lib/cn";
 
@@ -32,6 +33,36 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
     >
       <span className={cn("absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all", on ? "left-[22px]" : "left-0.5")} />
     </button>
+  );
+}
+
+function AiModeRow() {
+  const mode = useAiMode();
+  const options: { value: AiMode; label: string; desc: string }[] = [
+    { value: "off", label: "Off", desc: "No AI calls anywhere" },
+    { value: "manual", label: "Manual", desc: "✨ buttons only (default)" },
+    { value: "auto", label: `Auto ≥${AI_AUTO_MIN_STRENGTH}`, desc: "Strong signals explained automatically" },
+  ];
+  return (
+    <div className="px-5 py-4">
+      <div className="flex flex-wrap gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1" role="group" aria-label="AI explanation mode">
+        {options.map((o) => (
+          <button
+            key={o.value}
+            onClick={() => setAiMode(o.value)}
+            aria-pressed={mode === o.value}
+            title={o.desc}
+            className={cn("min-h-[44px] flex-1 rounded-md px-3 py-1.5 text-xs font-bold whitespace-nowrap", mode === o.value ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300")}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-slate-500">
+        Explanations are cached per signal fingerprint, throttled (10s), max 2 concurrent —
+        price ticks never trigger calls. The key lives server-side only.
+      </p>
+    </div>
   );
 }
 
@@ -245,6 +276,11 @@ export default function Settings() {
               </button>
             }
           />
+        </Card>
+
+        <Card>
+          <CardHeader title="AI Explanations" subtitle="Gemini/Groq explains signals on demand — the engine always decides" />
+          <AiModeRow />
         </Card>
 
         <Card>

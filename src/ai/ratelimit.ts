@@ -74,3 +74,8 @@ export function resetRateLimitForTests(): void {
   activeCount = 0;
   queue.length = 0;
 }
+
+/** In-flight + queued AI tasks (dev monitor; the cap is AI_MAX_CONCURRENT). */
+export function aiQueueDepth(): number {
+  return activeCount + queue.length;
+}

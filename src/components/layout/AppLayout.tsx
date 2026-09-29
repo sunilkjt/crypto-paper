@@ -12,6 +12,7 @@ import {
   Radar,
   Settings,
   Star,
+  TrendingUp,
   X,
   Zap,
 } from "lucide-react";
@@ -34,6 +35,7 @@ import {
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/scanner", label: "Market Scanner", icon: Radar, end: false },
+  { to: "/markets", label: "Markets", icon: TrendingUp, end: false },
   { to: "/coin/OP", label: "Coin Analysis", icon: CandlestickChart, end: false },
   { to: "/bounce", label: "Best Bounce", icon: ArrowUpFromDot, end: false },
   { to: "/alerts", label: "Alerts", icon: Bell, end: false },
@@ -47,6 +49,7 @@ const NAV = [
 const BOTTOM_NAV = [
   { to: "/", label: "Home", icon: LayoutDashboard, end: true },
   { to: "/scanner", label: "Scan", icon: Radar, end: false },
+  { to: "/markets", label: "Markets", icon: TrendingUp, end: false },
   { to: "/bounce", label: "Bounce", icon: ArrowUpFromDot, end: false },
   { to: "/paper", label: "Paper", icon: Briefcase, end: false },
   { to: "/settings", label: "Setup", icon: Settings, end: false },
@@ -280,8 +283,8 @@ export default function AppLayout() {
         </main>
 
         {/* Mobile bottom nav */}
-        <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 backdrop-blur lg:hidden">
-          <div className="grid grid-cols-5">
+        <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 backdrop-blur lg:hidden" aria-label="Primary">
+          <div className="grid grid-cols-6">
             {BOTTOM_NAV.map((item) => {
               const Icon = item.icon;
               return (

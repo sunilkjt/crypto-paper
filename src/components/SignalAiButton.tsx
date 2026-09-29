@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { buildAiInput, getAiAnalysis } from "../ai";
+import { buildAiInput, getAiAnalysis, useAiMode } from "../ai";
 import type { Signal } from "../analysis/signal";
 import { getCachedCandles } from "../market/hyperliquid";
 import { getCandleWindow } from "../market/hyperliquid/timeframes";
@@ -28,6 +28,8 @@ export function SignalAiButton({
   const [summary, setSummary] = useState<string | null>(null);
   const [cached, setCached] = useState(false);
   const [busy, setBusy] = useState(false);
+  const aiMode = useAiMode();
+  if (aiMode === "off") return null;
 
   const explain = async () => {
     if (busy) return;

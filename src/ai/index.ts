@@ -21,6 +21,9 @@ export {
   AI_MIN_INTERVAL_MS,
 } from "./ratelimit";
 export { getAiAnalysis, defaultProvider, resetDefaultProvider, type AiStatus } from "./analyst";
+export { AI_AUTO_MIN_STRENGTH, getAiMode, setAiMode, useAiMode, type AiMode } from "./settings";
+export { aiQueueDepth } from "./ratelimit";
+export { readAiStats, resetAiStatsForTests } from "./stats";
 export { LocalExplainerProvider } from "./providers/localExplainer";
 export { HttpAiProvider, aiEndpointFromEnv } from "./providers/httpProvider";
 export { summarizeRegime, type RegimeSummary } from "./regime";

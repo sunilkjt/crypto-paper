@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { readDiagnostics, type DiagnosticsSnapshot } from "../market/diagnostics";
+import { aiQueueDepth } from "../ai/ratelimit";
+import { readAiStats } from "../ai/stats";
 
 /**
  * Development-only request monitor. Rendered behind `import.meta.env.DEV`
@@ -8,11 +10,15 @@ import { readDiagnostics, type DiagnosticsSnapshot } from "../market/diagnostics
  */
 export function DiagnosticsPanel() {
   const [snap, setSnap] = useState<DiagnosticsSnapshot>(() => readDiagnostics());
+  const [ai, setAi] = useState(() => readAiStats());
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    const id = window.setInterval(() => setSnap(readDiagnostics()), 2000);
+    const id = window.setInterval(() => {
+      setSnap(readDiagnostics());
+      setAi(readAiStats());
+    }, 2000);
     return () => window.clearInterval(id);
   }, [open]);
 
@@ -36,6 +42,10 @@ export function DiagnosticsPanel() {
     ["Cache hit rate", `${snap.cacheHitRate}%`],
     ["Rate limits (429)", snap.rateLimits],
     ["Active subscriptions", snap.activeSubscriptions],
+    ["AI requests (backend calls)", ai.calls],
+    ["AI cache hits", ai.hits],
+    ["AI cache misses", ai.misses],
+    ["AI queued/in-flight", aiQueueDepth()],
   ];
 
   return (

@@ -4,7 +4,9 @@ import { Card, CardHeader, DemoBadge, DirectionBadge, PageHeader, Stat } from ".
 import { AiAnalysisCard } from "../components/AiAnalysisCard";
 import { NewsList } from "../components/NewsList";
 import { buildAiInput } from "../ai/input";
+import { AI_AUTO_MIN_STRENGTH, useAiMode } from "../ai";
 import { useAiAnalysis } from "../ai/useAiAnalysis";
+import { SignalAiButton } from "../components/SignalAiButton";
 import { useNews } from "../news/useNews";
 import { CandleChart } from "../components/CandleChart";
 import { FreshnessLabel, LiveBadge } from "../components/LiveBadge";
@@ -248,7 +250,7 @@ function TakePaperTrade({ signal, coin, mark }: { signal: Signal; coin: string; 
 
 export default function CoinAnalysis() {
   const { symbol = "OP" } = useParams();
-  const coin = (symbol ?? "OP").toUpperCase();
+  const routeCoin = (symbol ?? "OP").toUpperCase();
   const [tf, setTf] = useState<Timeframe>("15m");
   const location = useLocation();
   // Alert context banner: validated shape only; refresh-safe (absent on reload).
@@ -281,9 +283,15 @@ export default function CoinAnalysis() {
 
   const { markets, status: mktStatus, updatedAt: mktUpdated, stale: mktStale } = useMarkets();
   const market = useMemo(
-    () => markets.find((m) => m.symbol === coin),
-    [markets, coin],
+    () =>
+      markets.find((m) => m.symbol === routeCoin) ??
+      markets.find((m) => m.symbol.toUpperCase() === routeCoin),
+    [markets, routeCoin],
   );
+  // Canonical casing comes from the market list: HIP-3 builder-dex names keep
+  // a lowercase `dex:` prefix (xyz:NVDA) that the candle API requires
+  // verbatim. Unlisted symbols fall back to the route form (unchanged).
+  const coin = market?.symbol ?? routeCoin;
   const { data: mtf, loading: candlesLoading, error: candlesError } = useMtfCandles(coin);
   const signal = useSignal(coin, mtf, "15m");
 
@@ -334,7 +342,16 @@ export default function CoinAnalysis() {
       return null;
     }
   }, [signal, mktStale, coin, market, mtf, newsItems]);
-  const ai = useAiAnalysis(aiInput, "15m", aiInput !== null);
+  // Automatic explanations run ONLY in auto mode for strong signals.
+  // Manual mode (default) and off never auto-fetch: ticks stay AI-free and
+  // the on-tap button below covers explicit requests.
+  const aiMode = useAiMode();
+  const aiEnabled =
+    aiInput !== null &&
+    aiMode === "auto" &&
+    signal !== null &&
+    signal.signalStrength >= AI_AUTO_MIN_STRENGTH;
+  const ai = useAiAnalysis(aiInput, "15m", aiEnabled);
 
   // Lazy journal backfill: the coin explanation enriches logged signals.
   useEffect(() => {
@@ -649,6 +666,11 @@ export default function CoinAnalysis() {
           cached={ai.cached}
           marketDataTimestamp={mktUpdated}
         />
+        {aiMode !== "off" && ai.state !== "ok" && signal && !showStaleSignal && market && (
+          <div className="mt-2">
+            <SignalAiButton symbol={coin} signal={signal} market={market} />
+          </div>
+        )}
       </div>
 
       <div className="mt-4">

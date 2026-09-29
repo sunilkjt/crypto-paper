@@ -1,4 +1,5 @@
 import { aiSignalKey, getCachedAi, setCachedAi } from "./cache";
+import { recordAiCacheHit, recordAiCacheMiss, recordAiCall } from "./stats";
 import { validateAiResponse } from "./validate";
 import { AiUnavailableError, type AiAnalysis, type AiAnalysisInput, type AIProvider } from "./types";
 import { dedupedRequest, markCalled, throttleDelayMs } from "./ratelimit";
@@ -24,7 +25,11 @@ export async function getAiAnalysis(args: {
   const key = aiSignalKey(input, timeframe);
 
   const cached = getCachedAi(key, input);
-  if (cached) return { status: "ok", analysis: cached, provider: cached.provider, cached: true };
+  if (cached) {
+    recordAiCacheHit();
+    return { status: "ok", analysis: cached, provider: cached.provider, cached: true };
+  }
+  recordAiCacheMiss();
 
   try {
     // Throttle + provider run INSIDE the deduped task so concurrent
@@ -35,6 +40,7 @@ export async function getAiAnalysis(args: {
         await new Promise((resolve) => setTimeout(resolve, Math.min(innerWait, 3000)));
       }
       markCalled(key);
+      recordAiCall();
       const raw = await provider.analyze(input, { timeoutMs: args.timeoutMs, signal: args.signal });
       // Structural guard: EVERY provider output is re-validated here, so no
       // provider (present or future) can override direction or sneak in numbers.
