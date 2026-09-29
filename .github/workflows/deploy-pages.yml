@@ -39,6 +39,8 @@ jobs:
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
           # Gemini explanations backend (empty = local explainer fallback).
           VITE_AI_ENDPOINT: ${{ secrets.VITE_AI_ENDPOINT }}
+          # Telegram delivery endpoint (empty = Not configured status).
+          VITE_TELEGRAM_ENDPOINT: ${{ secrets.VITE_TELEGRAM_ENDPOINT }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
