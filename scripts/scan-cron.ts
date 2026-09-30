@@ -10,6 +10,7 @@ import type { Market, Timeframe } from "../src/market/hyperliquid/types.js";
 import type { MarketCategory } from "../src/market/classify.js";
 import type { SignalEvent } from "../src/alerts/events.js";
 import { createSupabaseStateStore } from "../src/cron/state.js";
+import { createHistoryStore, type HistoryRow } from "../src/cron/history.js";
 import { createTelegramSender, deliverEvents } from "../src/cron/notify.js";
 import { runOnce, type CronSettings } from "../src/cron/runner.js";
 
@@ -65,6 +66,7 @@ async function main(): Promise<void> {
   );
 
   const store = createSupabaseStateStore({ url: supabaseUrl, serviceKey });
+  const history = createHistoryStore({ url: supabaseUrl, serviceKey });
   const sender = createTelegramSender({ token: botToken });
 
   const headers = { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` };
@@ -80,6 +82,10 @@ async function main(): Promise<void> {
       }),
     loadState: () => store.load(),
     saveState: (s) => store.save(s),
+    saveHistory: async (rows: HistoryRow[]) => {
+      await history.upsert(rows);
+      await history.pruneOlderThanDays(30);
+    },
     listChats: async (): Promise<string[]> => {
       const res = await fetch(
         `${supabaseUrl.replace(/\/$/, "")}/rest/v1/telegram_connections?enabled=eq.true&select=telegram_chat_id`,

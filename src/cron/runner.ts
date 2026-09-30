@@ -9,6 +9,7 @@ import type { Market } from "../market/hyperliquid/types";
 import type { ScanSummary } from "../scanner/engine";
 import { buildUniverse, mainDexSymbols } from "./universe";
 import type { CronState, SeenEntry } from "./state";
+import type { HistoryRow } from "./history";
 
 /**
  * Headless scheduled run: markets → per-category deterministic scans →
@@ -32,6 +33,7 @@ export interface RunnerDeps {
   scanCategory: (universe: Market[], category: MarketCategory) => Promise<ScanSummary>;
   loadState: () => Promise<CronState>;
   saveState: (state: CronState) => Promise<void>;
+  saveHistory: (rows: HistoryRow[]) => Promise<void>;
   listChats: () => Promise<string[]>;
   deliver: (events: SignalEvent[], chats: string[]) => Promise<{ delivered: number }>;
   log?: (msg: string) => void;
@@ -94,6 +96,7 @@ export async function runOnce(settings: CronSettings, deps: RunnerDeps): Promise
   });
 
   const report: RunReport = { categories: [], totalDelivered: 0 };
+  const historyRows: HistoryRow[] = [];
 
   for (const category of settings.categories) {
     const rep: CategoryReport = {
@@ -178,13 +181,50 @@ export async function runOnce(settings: CronSettings, deps: RunnerDeps): Promise
       state.seens[category] = seen;
       await deps.saveState(state);
 
+      // Server-side signal history: every qualifying signal (non-WAIT at
+      // or above the notify bar), independent of delivery success, so pull
+      // commands read the same history the push path used.
+      for (const r of summary.results) {
+        if (!r.id || r.signal.direction === "WAIT") continue;
+        if (r.signal.signalStrength < settings.minStrength) continue;
+        const entry = seen[r.id];
+        historyRows.push({
+          id: r.id,
+          category,
+          symbol: r.symbol,
+          direction: r.signal.direction,
+          score: r.signal.signalStrength,
+          timeframe: r.signal.timeframe,
+          entry_low: r.signal.entryLow,
+          entry_high: r.signal.entryHigh,
+          invalidation: r.signal.invalidation,
+          tp1: r.signal.tp1,
+          tp2: r.signal.tp2,
+          tp3: r.signal.tp3,
+          risk_reward: r.signal.riskReward,
+          setup_type: r.setupType,
+          status: entry?.status ?? lifecycleById.get(r.id) ?? "NEW",
+          first_seen: new Date(entry?.firstSeen ?? now).toISOString(),
+          last_seen: new Date(now).toISOString(),
+        });
+      }
+
       if (deliverable.length > 0) {
         if (chats.length === 0) {
           log(`${category}: ${deliverable.length} events ready but no chats linked`);
         } else {
-          const res = await deps.deliver(deliverable, chats);
-          rep.delivered = res.delivered;
-          report.totalDelivered += res.delivered;
+          try {
+            const res = await deps.deliver(deliverable, chats);
+            rep.delivered = res.delivered;
+            report.totalDelivered += res.delivered;
+          } catch (e) {
+            // At-most-once delivery: the cooldown is already recorded, so a
+            // failed send never becomes a duplicate burst. The signal stays
+            // in history and lifecycle transitions still fire later.
+            const msg = e instanceof Error ? e.message : "delivery failed";
+            rep.errors.push(`delivery: ${msg}`);
+            log(`${category}: delivery ERROR ${msg}`);
+          }
         }
       }
       log(
@@ -202,6 +242,34 @@ export async function runOnce(settings: CronSettings, deps: RunnerDeps): Promise
       }
     }
     report.categories.push(rep);
+  }
+
+  if (historyRows.length > 0) {
+    try {
+      await deps.saveHistory(historyRows);
+      log(`history: upserted ${historyRows.length} rows`);
+    } catch (e) {
+      log(`history: FAILED ${e instanceof Error ? e.message : "unknown"} (scan results unaffected)`);
+    }
+  }
+
+  // Heartbeat for /status: fresh timestamps prove liveness; missing or
+  // stale heartbeats render as delayed. Never throws the run.
+  try {
+    const perCategory: Record<string, { universe: number; scanned: number; signals: number }> = {};
+    for (const rep of report.categories) {
+      perCategory[rep.category] = { universe: rep.universe, scanned: rep.scanned, signals: rep.signals };
+    }
+    const prevDelivery = state.lastRun?.lastDeliveryAt ?? null;
+    state.lastRun = {
+      at: now,
+      perCategory,
+      delivered: report.totalDelivered,
+      lastDeliveryAt: report.totalDelivered > 0 ? now : prevDelivery,
+    };
+    await deps.saveState(state);
+  } catch (e) {
+    log(`heartbeat: FAILED ${e instanceof Error ? e.message : "unknown"}`);
   }
   return report;
 }

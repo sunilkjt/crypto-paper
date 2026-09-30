@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runOnce, type CronSettings } from "../runner";
 import type { CronState } from "../state";
+import type { HistoryRow } from "../history";
 import type { Market } from "../../market/hyperliquid/types";
 import type { MarketCategory } from "../../market/classify";
 import type { ScannedCoin, ScanSummary } from "../../scanner/engine";
@@ -81,6 +82,7 @@ function baseSettings(): CronSettings {
 interface Harness {
   saved: CronState | null;
   delivered: SignalEvent[];
+  history: HistoryRow[];
   chats: string[];
   scans: MarketCategory[];
   summaries: Partial<Record<MarketCategory, ScanSummary>>;
@@ -88,7 +90,7 @@ interface Harness {
 }
 
 function harness(): Harness {
-  return { saved: null, delivered: [], chats: ["chat-1"], scans: [], summaries: {}, failOn: new Set() };
+  return { saved: null, delivered: [], history: [], chats: ["chat-1"], scans: [], summaries: {}, failOn: new Set() };
 }
 
 function deps(h: Harness, now = 1_000_000) {
@@ -104,6 +106,9 @@ function deps(h: Harness, now = 1_000_000) {
     loadState: async (): Promise<CronState> => h.saved ?? { seens: {}, cooldowns: {} },
     saveState: async (s: CronState): Promise<void> => {
       h.saved = JSON.parse(JSON.stringify(s)) as CronState;
+    },
+    saveHistory: async (rows: HistoryRow[]): Promise<void> => {
+      h.history.push(...rows);
     },
     listChats: async (): Promise<string[]> => h.chats,
     deliver: async (events: SignalEvent[], chats: string[]): Promise<{ delivered: number }> => {
@@ -194,5 +199,45 @@ describe("headless runner", () => {
     s.categories = ["commodities"];
     await runOnce(s, deps(h));
     expect(h.scans).toEqual(["commodities"]);
+  });
+
+  it("persists signal history independent of delivery", async () => {
+    const h = harness();
+    // Delivery fails, but the qualifying signal must still land in history.
+    const failingDeliver = {
+      ...deps(h),
+      deliver: async (): Promise<{ delivered: number }> => {
+        throw new Error("telegram down");
+      },
+    };
+    h.summaries.crypto = summaryFor([coin("BTC", "LONG", 84)]);
+    // Runner catches per-event? No — deliver throws for the batch; the run
+    // must still record history and state (verified below via try/catch path).
+    const res = await runOnce(baseSettings(), failingDeliver).catch(() => null);
+    void res;
+    // History write happens before delivery, so it survives delivery failure.
+    expect(h.history.map((r) => r.id)).toEqual(["BTC|LONG|15m|TREND|1"]);
+    const row = h.history[0];
+    expect(row.category).toBe("crypto");
+    expect(row.symbol).toBe("BTC");
+    expect(row.score).toBe(84);
+    expect(row.entry_low).toBe(98);
+  });
+
+  it("records heartbeat and preserves last delivery time", async () => {
+    const h = harness();
+    h.summaries.crypto = summaryFor([coin("BTC", "LONG", 84)]);
+    await runOnce(baseSettings(), deps(h, 5_000_000));
+    expect(h.saved?.lastRun?.at).toBe(5_000_000);
+    expect(h.saved?.lastRun?.perCategory.crypto).toMatchObject({ scanned: 1, signals: 1 });
+    expect(h.saved?.lastRun?.delivered).toBe(1);
+    expect(h.saved?.lastRun?.lastDeliveryAt).toBe(5_000_000);
+
+    // Quiet run: heartbeat advances, delivery time is preserved.
+    h.summaries.crypto = summaryFor([]);
+    await runOnce(baseSettings(), deps(h, 6_000_000));
+    expect(h.saved?.lastRun?.at).toBe(6_000_000);
+    expect(h.saved?.lastRun?.delivered).toBe(0);
+    expect(h.saved?.lastRun?.lastDeliveryAt).toBe(5_000_000);
   });
 });

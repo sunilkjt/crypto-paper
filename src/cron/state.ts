@@ -11,9 +11,24 @@ export interface SeenEntry {
   firstSeen: number;
 }
 
+export interface CategoryHeartbeat {
+  universe: number;
+  scanned: number;
+  signals: number;
+}
+
+export interface LastRun {
+  at: number;
+  perCategory: Record<string, CategoryHeartbeat>;
+  delivered: number;
+  lastDeliveryAt: number | null;
+}
+
 export interface CronState {
   seens: Record<string, Record<string, SeenEntry>>;
   cooldowns: Record<string, number>;
+  /** Heartbeat for /status (optional for backward compatibility). */
+  lastRun?: LastRun;
 }
 
 export const EMPTY_STATE: CronState = { seens: {}, cooldowns: {} };
