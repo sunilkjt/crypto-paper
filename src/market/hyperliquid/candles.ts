@@ -74,6 +74,16 @@ export function normalizeCandles(payload: unknown): Candle[] {
 }
 
 /**
+ * Request casing for coin names. Hyperliquid dex prefixes are lowercase
+ * (`xyz:NVDA`) and candle endpoints reject uppercased prefixes, so
+ * dex-prefixed names pass through verbatim. Plain main-dex names uppercase
+ * exactly as before (no behavior change for existing symbols).
+ */
+export function coinForRequest(symbol: string): string {
+  return symbol.includes(":") ? symbol : symbol.toUpperCase();
+}
+
+/**
  * Fetch historical OHLCV candles. UI calls this signature only —
  * never the raw endpoint.
  */
@@ -84,7 +94,7 @@ export async function getCandles(
   endTime: number,
   opts?: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<Candle[]> {
-  const coin = symbol.toUpperCase();
+  const coin = coinForRequest(symbol);
   const payload = await postInfoWithRetry(
     {
       type: "candleSnapshot",

@@ -1,6 +1,6 @@
 import { WS_URL } from "./hyperliquid/client";
 import { normalizeAllMids } from "./hyperliquid/markets";
-import { normalizeWsCandle } from "./hyperliquid/candles";
+import { coinForRequest, normalizeWsCandle } from "./hyperliquid/candles";
 import type { Candle, RawWsCandle } from "./hyperliquid/types";
 import { setActiveSubscriptions, setWsConnections } from "./diagnostics";
 
@@ -72,10 +72,11 @@ class WsManager {
   }
 
   subscribeCandles(coin: string, interval: string, listener: CandleListener): () => void {
-    const key = `${coin.toUpperCase()}:${interval}`;
+    const canonical = coinForRequest(coin);
+    const key = `${canonical}:${interval}`;
     let sub = this.candleSubs.get(key);
     if (!sub) {
-      sub = { coin: coin.toUpperCase(), interval, listeners: new Set() };
+      sub = { coin: canonical, interval, listeners: new Set() };
       this.candleSubs.set(key, sub);
     }
     sub.listeners.add(listener);
@@ -211,7 +212,7 @@ class WsManager {
       for (const raw of arr) {
         try {
           const candle = normalizeWsCandle(raw);
-          const key = `${String(raw.s).toUpperCase()}:${String(raw.i)}`;
+          const key = `${coinForRequest(String(raw.s))}:${String(raw.i)}`;
           const sub = this.candleSubs.get(key);
           if (!sub) continue;
           for (const l of sub.listeners) {

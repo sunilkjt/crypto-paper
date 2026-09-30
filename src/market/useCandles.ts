@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getCandleWindow } from "./hyperliquid/timeframes";
+import { coinForRequest } from "./hyperliquid/candles";
 import { getCachedCandles } from "./hyperliquid";
 import { wsManager } from "./ws";
 import { onVisible, pollAllowed } from "./visibility";
@@ -27,7 +28,7 @@ function toMessage(err: unknown): string {
  * Polling fallback refreshes if WS goes quiet. No full-app reloads.
  */
 export function useCandles(symbol: string, timeframe: Timeframe, limit = 300): CandlesState {
-  const coin = symbol.toUpperCase();
+  const coin = coinForRequest(symbol);
   const [candles, setCandles] = useState<Candle[]>([]);
   const [status, setStatus] = useState<CandlesState["status"]>("loading");
   const [error, setError] = useState<string | null>(null);

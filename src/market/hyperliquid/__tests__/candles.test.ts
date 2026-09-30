@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeCandle, normalizeCandles, normalizeWsCandle } from "../candles";
+import { coinForRequest, normalizeCandle, normalizeCandles, normalizeWsCandle } from "../candles";
 import { HyperliquidError } from "../types";
 
 const RAW = [
@@ -53,3 +53,16 @@ describe("normalizeCandles", () => {
     expect(() => normalizeCandles({})).toThrow(HyperliquidError);
   });
 });
+
+describe("coinForRequest", () => {
+  it("preserves lowercase dex prefixes (candle API rejects uppercased ones)", () => {
+    expect(coinForRequest("xyz:NVDA")).toBe("xyz:NVDA");
+    expect(coinForRequest("flx:GOLD")).toBe("flx:GOLD");
+  });
+
+  it("uppercases plain main-dex names exactly as before", () => {
+    expect(coinForRequest("BTC")).toBe("BTC");
+    expect(coinForRequest("btc")).toBe("BTC");
+  });
+});
+

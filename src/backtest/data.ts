@@ -1,5 +1,5 @@
 import type { Candle, Timeframe } from "../market/hyperliquid/types";
-import { getCandles } from "../market/hyperliquid/candles";
+import { coinForRequest, getCandles } from "../market/hyperliquid/candles";
 import { timeframeToMs } from "../market/hyperliquid/timeframes";
 import { postInfoWithRetry } from "../market/hyperliquid/client";
 import { HyperliquidError } from "../market/hyperliquid/types";
@@ -34,7 +34,7 @@ export async function fetchHistoricalCandles(
   endTime: number,
   onProgress?: (done: number, total: number) => void,
 ): Promise<Candle[]> {
-  const coin = symbol.toUpperCase();
+  const coin = coinForRequest(symbol);
   const span = timeframeToMs(timeframe) * CHUNK_CANDLES;
   const windows: { start: number; end: number }[] = [];
   for (let s = startTime; s < endTime; s += span) {
@@ -76,7 +76,7 @@ export async function fetchFundingHistory(
 ): Promise<{ timestamp: number; rate: number }[]> {
   try {
     const payload = await postInfoWithRetry(
-      { type: "fundingHistory", coin: symbol.toUpperCase(), startTime, endTime },
+      { type: "fundingHistory", coin: coinForRequest(symbol), startTime, endTime },
       { timeoutMs: 12_000 },
     );
     if (!Array.isArray(payload)) return [];
