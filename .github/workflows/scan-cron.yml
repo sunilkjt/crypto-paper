@@ -1,0 +1,53 @@
+# Headless paper-signal scanner (24/7 Telegram signals, laptop closed).
+#
+# Every 5 minutes: scan crypto/stocks/commodities via the SAME deterministic
+# engine, evaluate lifecycle transitions against Supabase-persisted state,
+# and deliver new qualifying signals to linked Telegram chats. No browser,
+# no AI calls, no journal writes, no paper trades — notifications only.
+#
+# Required repo secrets (Settings → Secrets → Actions — server-side only,
+# NEVER prefixed VITE_, NEVER baked into any frontend bundle):
+#   SUPABASE_URL              (same value as VITE_SUPABASE_URL)
+#   SUPABASE_SERVICE_ROLE_KEY (Project Settings → API → service_role)
+#   TELEGRAM_BOT_TOKEN        (same value as the Supabase secret)
+#
+# Tunables below (env): categories, minimum strength, cooldown, site URL.
+# Pause the schedule anytime: Actions → "Paper signal cron" → Disable.
+# One-scanner rule: pause this workflow while debugging with an open
+# browser scanner to avoid double delivery.
+
+name: Paper signal cron
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signal-cron
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run scan:cron
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          SITE_URL: https://sunilkjt.github.io/crypto-paper
+          SCAN_CATEGORIES: crypto,stocks,commodities
+          NOTIFY_MIN_STRENGTH: "70"
+          NOTIFY_DIRECTIONS: LONG,SHORT
+          NOTIFY_COOLDOWN_MINUTES: "30"
