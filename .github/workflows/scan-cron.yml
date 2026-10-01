@@ -33,6 +33,9 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    # Hung runs must never block the queue forever (concurrency is
+    # non-cancelling by design so overlapping scans serialize).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -9,7 +9,10 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest run",
-    "scan:cron": "tsx scripts/scan-cron.ts"
+    "scan:cron": "tsx scripts/scan-cron.ts",
+    "scan:watchdog": "tsx scripts/cron-watchdog.ts",
+    "supabase:doctor": "tsx scripts/supabase-doctor.ts",
+    "bundle:webhook": "node scripts/bundle-webhook.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",

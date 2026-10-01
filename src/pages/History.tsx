@@ -6,6 +6,19 @@ import { CategoryChip, FilterGroup } from "../components/SignalCard";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { useMarkets } from "../market/store";
 import { classifyMarket, type MarketCategory } from "../market/classify";
+import { useServerHistory, type HistorySource } from "../supabase/history";
+
+const HISTORY_SOURCE_KEY = "cryptoin:history-source:v1";
+
+function loadHistorySource(): HistorySource {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(HISTORY_SOURCE_KEY) === "server"
+      ? "server"
+      : "local";
+  } catch {
+    return "local";
+  }
+}
 import {
   clearJournal,
   loadJournal,
@@ -90,6 +103,21 @@ export default function History() {
   const [refreshing, setRefreshing] = useState(false);
   const [initialized, setInitialized] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  // Source toggle: device journal (live local analysis) vs authoritative
+  // server history (includes signals generated while this browser was
+  // closed). Never blended — the active source is always labeled.
+  const [source, setSourceState] = useState<HistorySource>(() => loadHistorySource());
+  const setSource = (s: HistorySource) => {
+    setSourceState(s);
+    setPage(0);
+    try {
+      localStorage?.setItem(HISTORY_SOURCE_KEY, s);
+    } catch {
+      // best effort
+    }
+  };
+  const server = useServerHistory(source, catFilter, true);
+  const visibleEntries = source === "server" ? server.entries : entries;
 
   const refreshOutcomes = async () => {
     const open = loadJournal()
@@ -169,13 +197,13 @@ export default function History() {
 
   const timeframes = useMemo(() => {
     const set = new Set<string>();
-    for (const e of entries) if (e.timeframe) set.add(e.timeframe);
+    for (const e of visibleEntries) if (e.timeframe) set.add(e.timeframe);
     return ["ALL", ...[...set].sort()];
-  }, [entries]);
+  }, [visibleEntries]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toUpperCase();
-    let list = entries;
+    let list = visibleEntries;
     if (filter === "ACTIVE") list = list.filter((e) => ACTIVE_STATUSES.includes(e.status));
     else if (filter !== "ALL") list = list.filter((e) => e.status === filter);
     if (q) list = list.filter((e) => e.symbol.includes(q));
@@ -191,7 +219,7 @@ export default function History() {
     else if (sortKey === "score") sorted.sort((a, b) => b.strength - a.strength || b.lastSeen - a.lastSeen);
     else sorted.sort((a, b) => b.lastSeen - a.lastSeen);
     return sorted;
-  }, [entries, filter, query, catFilter, mainSymbols, dirFilter, tfFilter, recency, sortKey]);
+  }, [visibleEntries, filter, query, catFilter, mainSymbols, dirFilter, tfFilter, recency, sortKey]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -217,8 +245,8 @@ export default function History() {
     setPage(0);
   };
 
-  const tp1Hits = entries.filter((e) => e.outcome?.tp1Reached).length;
-  const invHits = entries.filter((e) => e.status === "INVALIDATED").length;
+  const tp1Hits = visibleEntries.filter((e) => e.outcome?.tp1Reached).length;
+  const invHits = visibleEntries.filter((e) => e.status === "INVALIDATED").length;
 
   return (
     <div>
@@ -228,23 +256,25 @@ export default function History() {
         right={
           <div className="flex flex-wrap items-center gap-2">
             <ConnectionBadge showLabel={false} />
-            <button
-              onClick={() => {
-                clearJournal();
-                setEntries([]);
-              }}
-              className="min-h-[44px] rounded-lg border border-slate-700 px-4 text-xs font-bold text-slate-300 hover:bg-slate-800"
-            >
-              Clear journal
-            </button>
+            {source === "local" && (
+              <button
+                onClick={() => {
+                  clearJournal();
+                  setEntries([]);
+                }}
+                className="min-h-[44px] rounded-lg border border-slate-700 px-4 text-xs font-bold text-slate-300 hover:bg-slate-800"
+              >
+                Clear journal
+              </button>
+            )}
           </div>
         }
       />
 
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {[
-          ["Total Signals", String(entries.length), "journaled setups"],
-          ["Active", String(entries.filter((e) => ACTIVE_STATUSES.includes(e.status)).length), "open lifecycle states"],
+          {[
+            ["Total Signals", String(visibleEntries.length), source === "server" ? "cloud setups" : "journaled setups"],
+            ["Active", String(visibleEntries.filter((e) => ACTIVE_STATUSES.includes(e.status)).length), "open lifecycle states"],
           ["TP1 Touched", String(tp1Hits), "observed level touches"],
           ["Invalidated", String(invHits), "stopped setups"],
         ].map(([k, v, s]) => (
@@ -259,20 +289,34 @@ export default function History() {
       <Card>
         <CardHeader
           title="All Signals"
-          subtitle={`${filtered.length} shown · lifecycle status + observed touches`}
+          subtitle={`${filtered.length} shown · ${source === "server" ? "authoritative cloud history" : "this-device journal"}`}
           right={
             <button
-              onClick={() => void refreshOutcomes()}
-              disabled={refreshing}
+              onClick={() => (source === "server" ? server.refresh() : void refreshOutcomes())}
+              disabled={source === "server" ? server.loading : refreshing}
               className="min-h-[44px] rounded-lg border border-slate-700 px-4 text-xs font-bold text-slate-200 disabled:opacity-40 hover:bg-slate-800"
             >
-              {refreshing ? "Checking levels…" : "Refresh outcomes"}
+              {source === "server" ? (server.loading ? "Loading…" : "Refresh") : refreshing ? "Checking levels…" : "Refresh outcomes"}
             </button>
           }
         />
 
         {/* Filters */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-800/70 px-4 py-3 text-xs">
+          <span className="inline-flex flex-wrap items-center gap-1.5" role="group" aria-label="History source">
+            <span className="font-bold tracking-widest text-slate-500 uppercase">Source</span>
+            {(["local", "server"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setSource(s)}
+                aria-pressed={source === s}
+                title={s === "server" ? "Authoritative cloud history (includes signals made while this browser was closed)" : "This device's journal"}
+                className={cn("min-h-[44px] rounded-lg border px-3 font-bold", source === s ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" : "border-slate-800 text-slate-500 hover:border-slate-700")}
+              >
+                {s === "server" ? "Cloud" : "This device"}
+              </button>
+            ))}
+          </span>
           <FilterGroup
             label="Category"
             options={["ALL", "CRYPTO", "STOCKS", "COMMODITIES"]}
@@ -309,7 +353,17 @@ export default function History() {
         </div>
 
         <div className="px-4 py-4">
-          {loadError ? (
+          {source === "server" && server.loading ? (
+            <SkeletonGrid />
+          ) : source === "server" && server.error ? (
+            <div className="py-8 text-center">
+              <p className="text-sm font-semibold text-rose-300">Unable to load server signal history.</p>
+              <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">{server.error} Local records are untouched.</p>
+              <button onClick={server.refresh} className="mt-3 min-h-[44px] rounded-xl border border-slate-700 px-5 text-xs font-bold text-slate-200 hover:bg-slate-800">
+                Retry
+              </button>
+            </div>
+          ) : loadError ? (
             <div className="py-8 text-center">
               <p className="text-sm font-semibold text-rose-300">Unable to load signal history.</p>
               <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">Please try again. Your saved records are untouched.</p>
@@ -317,7 +371,7 @@ export default function History() {
                 Retry
               </button>
             </div>
-          ) : !initialized ? (
+          ) : !initialized && source === "local" ? (
             <SkeletonGrid />
           ) : rows.length === 0 ? (
             filtersActive ? (
@@ -331,7 +385,9 @@ export default function History() {
               <div className="py-8 text-center">
                 <p className="text-sm font-semibold text-slate-200">No signal history yet.</p>
                 <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">
-                  Signals will appear here after the scanner generates them.
+                  {source === "server"
+                    ? "Signals appear here after the scheduled scanner generates them."
+                    : "Signals will appear here after the scanner generates them."}
                 </p>
               </div>
             )

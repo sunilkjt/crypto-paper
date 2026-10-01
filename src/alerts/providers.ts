@@ -1,5 +1,26 @@
-import { eventCategoryLabel, eventMessage, type SignalEvent } from "./events";
+import { eventCategoryLabel, eventMessage, resolveEventCategory, type SignalEvent } from "./events";
 import { loadAlertSettings } from "./settings";
+import { fingerprintOf } from "./cooldown";
+import { claimDelivery, releaseDeliveryClaim } from "../supabase/claims";
+
+/** Injectable claim transport for tests (defaults hit the shared atomic gate). */
+export interface ClaimDeps {
+  claimDelivery?: (fingerprint: string, cooldownMs: number) => Promise<boolean | null>;
+  releaseClaim?: (fingerprint: string) => Promise<void>;
+}
+
+function eventFingerprint(event: SignalEvent): string {
+  return fingerprintOf({
+    type: event.type,
+    category: resolveEventCategory(event),
+    symbol: event.symbol,
+    direction: event.direction,
+    timeframe: event.timeframe,
+    entryLow: event.signal.entryLow,
+    entryHigh: event.signal.entryHigh,
+    strength: event.currentStrength,
+  });
+}
 
 /**
  * NotificationProvider abstraction — future providers plug in here:
@@ -22,6 +43,14 @@ function eventUrl(symbol: string): string {
 /** Browser notifications: permission asked ONLY on explicit enable. */
 export class BrowserNotificationProvider implements NotificationProvider {
   readonly name = "browser" as const;
+  private readonly claims: Required<ClaimDeps>;
+
+  constructor(claims: ClaimDeps = {}) {
+    this.claims = {
+      claimDelivery: claims.claimDelivery ?? claimDelivery,
+      releaseClaim: claims.releaseClaim ?? releaseDeliveryClaim,
+    };
+  }
 
   isAvailable(): boolean {
     try {
@@ -43,29 +72,46 @@ export class BrowserNotificationProvider implements NotificationProvider {
 
   notify(event: SignalEvent): void {
     if (!this.isAvailable()) return;
-    try {
-      const s = event.signal;
-      const cat = eventCategoryLabel(event);
-      const arrow = event.direction === "LONG" ? "📈" : "📉";
-      const n = new Notification(`${arrow} ${cat} ${event.direction} — ${event.symbol}`, {
-        body:
-          `Score ${event.currentStrength}\n` +
-          `Entry: ${s.entryLow ?? "—"} – ${s.entryHigh ?? "—"}\n` +
-          `SL: ${s.invalidation ?? "—"} · TP1: ${s.tp1 ?? "—"}\n` +
-          `R:R ${s.riskReward ?? "—"}`,
-        tag: event.id,
-      });
-      n.onclick = () => {
+    // Atomic cross-worker claim first: another tab/cron holding this fact
+    // suppresses us; transport failure falls back to immediate delivery
+    // (pre-atomic behavior preserved exactly when offline/unconfigured).
+    void (async () => {
+      const fp = eventFingerprint(event);
+      const cooldownMs = loadAlertSettings().cooldownMs;
+      try {
+        const claimed = await this.claims.claimDelivery(fp, cooldownMs).catch(() => null);
+        if (claimed === false) return;
+      } catch {
+        // fall through to delivery
+      }
+      try {
+        const s = event.signal;
+        const cat = eventCategoryLabel(event);
+        const arrow = event.direction === "LONG" ? "📈" : "📉";
+        const n = new Notification(`${arrow} ${cat} ${event.direction} — ${event.symbol}`, {
+          body:
+            `Score ${event.currentStrength}\n` +
+            `Entry: ${s.entryLow ?? "—"} – ${s.entryHigh ?? "—"}\n` +
+            `SL: ${s.invalidation ?? "—"} · TP1: ${s.tp1 ?? "—"}\n` +
+            `R:R ${s.riskReward ?? "—"}`,
+          tag: event.id,
+        });
+        n.onclick = () => {
+          try {
+            window.open(eventUrl(event.symbol), "_blank")?.focus();
+          } catch {
+            // ignore
+          }
+          n.close();
+        };
+      } catch {
         try {
-          window.open(eventUrl(event.symbol), "_blank")?.focus();
+          await this.claims.releaseClaim(fp).catch(() => undefined);
         } catch {
           // ignore
         }
-        n.close();
-      };
-    } catch {
-      // notifications must never break the app
-    }
+      }
+    })();
   }
 }
 
@@ -159,6 +205,8 @@ export interface TelegramDeps {
   getSessionToken?: () => Promise<string | null>;
   fetchFn?: typeof fetch;
   openUrl?: (url: string) => void;
+  claimDelivery?: ClaimDeps["claimDelivery"];
+  releaseClaim?: ClaimDeps["releaseClaim"];
 }
 
 async function defaultSessionToken(): Promise<string | null> {
@@ -191,6 +239,8 @@ export class TelegramNotificationProvider implements NotificationProvider {
       getSessionToken: deps.getSessionToken ?? defaultSessionToken,
       fetchFn: deps.fetchFn ?? fetch,
       openUrl: deps.openUrl ?? ((url: string) => window.open(url, "_blank")?.focus()),
+      claimDelivery: deps.claimDelivery ?? claimDelivery,
+      releaseClaim: deps.releaseClaim ?? releaseDeliveryClaim,
     };
   }
 
@@ -215,10 +265,30 @@ export class TelegramNotificationProvider implements NotificationProvider {
     const message = formatTelegramMessage(event);
     const url = analysisUrl(event.symbol);
     void (async () => {
+      const fp = eventFingerprint(event);
+      let cooldownMs = 1_800_000;
+      try {
+        cooldownMs = loadAlertSettings().cooldownMs;
+      } catch {
+        // fall back to the default window
+      }
+      const release = async () => {
+        try {
+          await this.deps.releaseClaim(fp).catch(() => undefined);
+        } catch {
+          // ignore
+        }
+      };
       try {
         const token = await this.deps.getSessionToken();
         if (!token) return;
-        await this.deps.fetchFn(this.endpoint, {
+        try {
+          const claimed = await this.deps.claimDelivery(fp, cooldownMs).catch(() => null);
+          if (claimed === false) return; // another worker won this fact
+        } catch {
+          // fall through to delivery (fail-open preserves offline behavior)
+        }
+        const res = await this.deps.fetchFn(this.endpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -226,8 +296,13 @@ export class TelegramNotificationProvider implements NotificationProvider {
           },
           body: JSON.stringify({ message, url, symbol: event.symbol, direction: event.direction }),
         }).catch(() => undefined);
+        if (!res || !res.ok) {
+          // Failed send must not read as delivered: release the claim so a
+          // later attempt may proceed instead of being cooldown-suppressed.
+          await release();
+        }
       } catch {
-        // delivery must never break the app
+        await release();
       }
     })();
   }

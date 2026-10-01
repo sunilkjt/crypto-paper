@@ -1,5 +1,6 @@
 import { evaluateScan, evaluateTargets, type MonitorSnapshot } from "../alerts/monitor";
 import { fingerprintOf, isOutsideCooldown } from "../alerts/cooldown";
+import type { ClaimFn, ReleaseFn } from "./claims";
 import { resolveEventCategory, type SignalEvent } from "../alerts/events";
 import type { AlertSettings } from "../alerts/settings";
 import { nextLifecycleState, type SignalLifecycleState } from "../signals";
@@ -10,6 +11,7 @@ import type { ScanSummary } from "../scanner/engine";
 import { buildUniverse, mainDexSymbols } from "./universe";
 import type { CronState, SeenEntry } from "./state";
 import type { HistoryRow } from "./history";
+import { classifyExcluded, classifyWait, topReasons, type RejectionCode } from "./diagnostics";
 
 /**
  * Headless scheduled run: markets → per-category deterministic scans →
@@ -34,6 +36,10 @@ export interface RunnerDeps {
   loadState: () => Promise<CronState>;
   saveState: (state: CronState) => Promise<void>;
   saveHistory: (rows: HistoryRow[]) => Promise<void>;
+  /** Shared atomic gate; must resolve false only when another worker won. */
+  claim: ClaimFn;
+  /** Burns a won claim after a failed send so retries may proceed. */
+  release: ReleaseFn;
   listChats: () => Promise<string[]>;
   deliver: (events: SignalEvent[], chats: string[]) => Promise<{ delivered: number }>;
   log?: (msg: string) => void;
@@ -44,9 +50,14 @@ export interface CategoryReport {
   universe: number;
   scanned: number;
   signals: number;
+  /** Non-WAIT results (directional setups, before notification gating). */
+  candidates: number;
   events: number;
   deliverable: number;
   delivered: number;
+  suppressed: number;
+  /** Diagnostic-only rejection buckets (never alters scoring). */
+  rejections: Record<string, number>;
   errors: string[];
 }
 
@@ -104,9 +115,12 @@ export async function runOnce(settings: CronSettings, deps: RunnerDeps): Promise
       universe: 0,
       scanned: 0,
       signals: 0,
+      candidates: 0,
       events: 0,
       deliverable: 0,
       delivered: 0,
+      suppressed: 0,
+      rejections: {},
       errors: [],
     };
     try {
@@ -120,6 +134,30 @@ export async function runOnce(settings: CronSettings, deps: RunnerDeps): Promise
       const summary = await deps.scanCategory(universe, category);
       rep.scanned = summary.scanned;
       rep.signals = summary.results.filter((r) => r.signal.direction !== "WAIT").length;
+      rep.candidates = rep.signals;
+      // Diagnostic-only rejection buckets over already-computed fields.
+      const rej: Record<string, number> = {};
+      const bump = (code: RejectionCode) => {
+        rej[code] = (rej[code] ?? 0) + 1;
+      };
+      for (const r of summary.results) {
+        if (r.signal.direction !== "WAIT" && r.signal.signalStrength >= settings.minStrength) continue;
+        if (r.signal.signalStrength < settings.minStrength) {
+          bump("LOW_SCORE");
+          continue;
+        }
+        bump(
+          classifyWait({
+            strength: r.signal.signalStrength,
+            minStrength: settings.minStrength,
+            mtfConflict: r.signal.multiTimeframe?.conflict === true,
+            riskReward: r.signal.riskReward,
+            volumeLow: r.signal.volume === "LOW",
+          }),
+        );
+      }
+      for (const x of summary.excluded) bump(classifyExcluded(x.reason));
+      rep.rejections = rej;
 
       const marks = new Map(universe.map((m) => [m.symbol, m.markPrice]));
       const ctx = { marks, watchlist: [] as string[], settings: alertSettings, now, mainDexSymbols: main };
@@ -161,7 +199,10 @@ export async function runOnce(settings: CronSettings, deps: RunnerDeps): Promise
       ];
       rep.events = events.length;
 
-      const deliverable = events.filter((e) => {
+      // Atomic cross-worker claim per event, with local-map fallback when
+      // the gate is unreachable (legacy semantics preserved exactly).
+      const gated: { event: SignalEvent; fp: string }[] = [];
+      for (const e of events) {
         const fp = fingerprintOf({
           type: e.type,
           category: resolveEventCategory(e),
@@ -172,10 +213,25 @@ export async function runOnce(settings: CronSettings, deps: RunnerDeps): Promise
           entryHigh: e.signal.entryHigh,
           strength: e.currentStrength,
         });
-        if (!isOutsideCooldown(state.cooldowns[fp], now, settings.cooldownMs)) return false;
+        let allowed: boolean;
+        try {
+          const claimed = await deps.claim(fp, settings.cooldownMs);
+          if (claimed === null) {
+            allowed = isOutsideCooldown(state.cooldowns[fp], now, settings.cooldownMs);
+          } else {
+            allowed = claimed;
+          }
+        } catch {
+          allowed = isOutsideCooldown(state.cooldowns[fp], now, settings.cooldownMs);
+        }
+        if (!allowed) {
+          rep.suppressed += 1;
+          continue;
+        }
         state.cooldowns[fp] = now;
-        return true;
-      });
+        gated.push({ event: e, fp });
+      }
+      const deliverable = gated.map((g) => g.event);
       rep.deliverable = deliverable.length;
 
       state.seens[category] = seen;
@@ -203,33 +259,46 @@ export async function runOnce(settings: CronSettings, deps: RunnerDeps): Promise
           tp3: r.signal.tp3,
           risk_reward: r.signal.riskReward,
           setup_type: r.setupType,
+          quality: r.quality,
           status: entry?.status ?? lifecycleById.get(r.id) ?? "NEW",
           first_seen: new Date(entry?.firstSeen ?? now).toISOString(),
           last_seen: new Date(now).toISOString(),
         });
       }
 
-      if (deliverable.length > 0) {
+      if (gated.length > 0) {
         if (chats.length === 0) {
-          log(`${category}: ${deliverable.length} events ready but no chats linked`);
+          log(`${category}: ${gated.length} events ready but no chats linked`);
         } else {
-          try {
-            const res = await deps.deliver(deliverable, chats);
-            rep.delivered = res.delivered;
-            report.totalDelivered += res.delivered;
-          } catch (e) {
-            // At-most-once delivery: the cooldown is already recorded, so a
-            // failed send never becomes a duplicate burst. The signal stays
-            // in history and lifecycle transitions still fire later.
-            const msg = e instanceof Error ? e.message : "delivery failed";
-            rep.errors.push(`delivery: ${msg}`);
-            log(`${category}: delivery ERROR ${msg}`);
+          for (const g of gated) {
+            try {
+              const res = await deps.deliver([g.event], chats);
+              rep.delivered += res.delivered;
+              report.totalDelivered += res.delivered;
+            } catch (e) {
+              // Failed send must not read as delivered: burn the won claim
+              // (server + local) so a later attempt may retry instead of
+              // being cooldown-suppressed. History + lifecycle unaffected.
+              try {
+                await deps.release(g.fp);
+              } catch {
+                // ignore
+              }
+              delete state.cooldowns[g.fp];
+              const msg = e instanceof Error ? e.message : "delivery failed";
+              rep.errors.push(`delivery: ${msg}`);
+              log(`${category}: delivery ERROR ${msg}`);
+            }
           }
         }
       }
+      const top = topReasons(rep.rejections, 3)
+        .map(([code, n]) => `${code}:${n}`)
+        .join(" ");
       log(
         `${category}: universe=${rep.universe} scanned=${rep.scanned} signals=${rep.signals} ` +
-          `events=${rep.events} deliverable=${rep.deliverable} delivered=${rep.delivered}`,
+          `events=${rep.events} deliverable=${rep.deliverable} delivered=${rep.delivered} suppressed=${rep.suppressed}` +
+          (top ? ` top-rejections=${top}` : ""),
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown scan error";

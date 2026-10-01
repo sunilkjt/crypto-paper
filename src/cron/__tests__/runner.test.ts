@@ -107,6 +107,8 @@ function deps(h: Harness, now = 1_000_000) {
     saveState: async (s: CronState): Promise<void> => {
       h.saved = JSON.parse(JSON.stringify(s)) as CronState;
     },
+    claim: async (): Promise<boolean | null> => true,
+    release: async (): Promise<void> => {},
     saveHistory: async (rows: HistoryRow[]): Promise<void> => {
       h.history.push(...rows);
     },
@@ -199,6 +201,19 @@ describe("headless runner", () => {
     s.categories = ["commodities"];
     await runOnce(s, deps(h));
     expect(h.scans).toEqual(["commodities"]);
+  });
+
+  it("reports candidates, rejections and a heartbeat for /status", async () => {
+    const h = harness();
+    h.summaries.crypto = summaryFor([coin("BTC", "LONG", 84), coin("ETH", "LONG", 55)]);
+    const res = await runOnce(baseSettings(), deps(h, 9_000_000));
+    const rep = res.categories.find((c) => c.category === "crypto");
+    expect(rep?.candidates).toBe(2);
+    expect(rep?.rejections.LOW_SCORE).toBe(1);
+    expect(h.saved?.lastRun?.at).toBe(9_000_000);
+    expect(h.saved?.lastRun?.perCategory.crypto).toMatchObject({ signals: 2 });
+    expect(h.saved?.lastRun?.lastDeliveryAt).toBe(9_000_000);
+    expect(h.history).toHaveLength(1); // only the >=70 signal is stored
   });
 
   it("persists signal history independent of delivery", async () => {

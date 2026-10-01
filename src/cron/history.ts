@@ -22,6 +22,7 @@ export interface HistoryRow {
   tp3: number | null;
   risk_reward: number | null;
   setup_type: string | null;
+  quality: string | null;
   status: string;
   first_seen: string;
   last_seen: string;
@@ -54,6 +55,9 @@ export function createHistoryStore(opts: {
         headers: { ...headers, Prefer: "resolution=merge-duplicates" },
         body: JSON.stringify(rows),
       });
+      if (res.status === 404) {
+        throw new Error("History upsert failed: signal_history table missing (run migration 0004).");
+      }
       if (!res.ok) {
         throw new Error(`History upsert failed (HTTP ${res.status}).`);
       }

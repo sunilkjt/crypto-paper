@@ -1,0 +1,51 @@
+# Independent watchdog for the 24/7 signal cron.
+#
+# Every 15 minutes: read the scanner heartbeat from Supabase. If stale,
+# send ONE Telegram alert; on recovery send ONE recovery message, then
+# stay silent. Never scans, never calls AI, never trades.
+#
+# Independent by construction: separate workflow, separate script, separate
+# state row (`watchdog` — the scanner's `cron-monitor` row is read-only
+# here), separate failure modes. A scanner outage cannot silence this job.
+#
+# Same 3 server-side secrets as scan-cron.yml (never VITE_, never bundled):
+#   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / TELEGRAM_BOT_TOKEN
+# Tunable: SCANNER_HEARTBEAT_MAX_AGE_MINUTES (default 20, >= 4x the 5-minute
+# scan interval so one or two delayed ticks never page).
+#
+# GitHub Actions scheduling is best-effort (busy hours can delay ticks by
+# minutes); the staleness threshold absorbs normal jitter. After 60 days of
+# repo inactivity GitHub auto-disables scheduled workflows — re-enable here.
+
+name: Signal watchdog
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signal-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run scan:watchdog
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          SCANNER_HEARTBEAT_MAX_AGE_MINUTES: "20"

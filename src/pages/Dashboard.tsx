@@ -9,6 +9,7 @@ import {
 } from "../components/ui";
 import { FreshnessLabel, LiveBadge } from "../components/LiveBadge";
 import { CategoryChip } from "../components/SignalCard";
+import { ScannerHealthPanel, ServerSignalCounts } from "../components/ScannerHealth";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { timeAgo } from "../components/NewsList";
 import { useMarkets } from "../market/store";
@@ -340,6 +341,9 @@ export default function Dashboard() {
       {/* HIGH-CONFLUENCE SETUPS — live scan, rank is confluence not advice */}
       <ScanHighlights />
 
+      {/* 24/7 CRON HEALTH — reads the same scanner_state the bot reads */}
+      <ScannerHealthPanel />
+
       {/* Market snapshot + signals note */}
       <div className="mt-5 grid gap-4 lg:grid-cols-5">
         <Card className="lg:col-span-2">
@@ -381,6 +385,7 @@ export default function Dashboard() {
               </Link>
             }
           />
+          <ServerSignalCounts />
           <RecentSignalsList />
         </Card>
       </div>

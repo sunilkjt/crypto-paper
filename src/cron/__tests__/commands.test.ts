@@ -142,9 +142,18 @@ describe("formatters", () => {
       perCategory: { crypto: { universe: 142, scanned: 40, signals: 6 } },
       lastDeliveryAt: 999_000,
       now: 1_000_000 + 60_000,
+      pairingUsername: "sunil",
+      lastSignalAt: "2026-09-30T18:05:00.000Z",
+      todayCounts: { crypto: 3, stocks: 1, commodities: 0 },
+      watchdogAlerting: false,
     });
     expect(online).toContain("ONLINE");
     expect(online).toContain("142 markets");
+    expect(online).toContain("@sunil");
+    expect(online).toContain("18:05 UTC");
+    expect(online).toContain("Signals today:");
+    expect(online).toContain("Stocks: 1");
+    expect(online).toContain("Watchdog: ARMED");
     const stale = formatStatus({ lastRunAt: 1_000_000, perCategory: {}, lastDeliveryAt: null, now: 1_000_000 + 20 * 60_000 });
     expect(stale).toContain("delayed");
     const never = formatStatus({ lastRunAt: null, perCategory: {}, lastDeliveryAt: null, now: 2_000_000 });

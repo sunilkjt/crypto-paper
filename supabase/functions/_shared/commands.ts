@@ -245,18 +245,34 @@ export interface Heartbeat {
   perCategory: Record<string, { universe: number; scanned: number; signals: number }>;
   lastDeliveryAt: number | null;
   now: number;
+  /** Paired Telegram username of the requester (shown, never secrets). */
+  pairingUsername?: string | null;
+  /** Latest signal_history timestamp the bot can serve. */
+  lastSignalAt?: string | null;
+  /** Today's per-category signal counts. */
+  todayCounts?: { crypto: number; stocks: number; commodities: number };
+  /** Watchdog alert state: true = alerting, false = armed, null = unknown. */
+  watchdogAlerting?: boolean | null;
 }
 
 /** ONLINE only from a fresh heartbeat — never from mere DB existence. */
 export function formatStatus(h: Heartbeat): string {
   const STALE_AFTER_MS = 15 * 60_000;
   const online = h.lastRunAt !== null && h.now - h.lastRunAt <= STALE_AFTER_MS;
+  const wd =
+    h.watchdogAlerting === true
+      ? "⚠ ALERTING"
+      : h.watchdogAlerting === false
+        ? "ARMED"
+        : "UNKNOWN";
+  const today = h.todayCounts;
   const lines = [
     `${online ? "🟢" : "🟠"} CryptoIn Scanner`,
     "",
     `Status: ${online ? "ONLINE" : "Scanner may be delayed"}`,
     "",
     `Last scan: ${h.lastRunAt === null ? "—" : fmtTime(new Date(h.lastRunAt).toISOString())}`,
+    ...(h.lastSignalAt ? [`Last signal: ${fmtDateTime(h.lastSignalAt)}`] : []),
     "",
   ];
   for (const cat of ["crypto", "stocks", "commodities"] as const) {
@@ -265,9 +281,17 @@ export function formatStatus(h: Heartbeat): string {
     lines.push(`${label}: ${c ? `${c.universe} markets` : "—"}`);
     lines.push("");
   }
+  if (today) {
+    lines.push("Signals today:");
+    lines.push(`Crypto: ${today.crypto}`);
+    lines.push(`Stocks: ${today.stocks}`);
+    lines.push(`Commodities: ${today.commodities}`);
+    lines.push("");
+  }
   lines.push(`Last Telegram delivery: ${h.lastDeliveryAt === null ? "—" : fmtTime(new Date(h.lastDeliveryAt).toISOString())}`);
   lines.push("");
-  lines.push("Telegram: Connected");
+  lines.push(`Telegram: CONNECTED${h.pairingUsername ? ` @${h.pairingUsername}` : ""}`);
+  lines.push(`Watchdog: ${wd}`);
   return lines.join("\n");
 }
 

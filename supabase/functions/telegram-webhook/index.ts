@@ -264,18 +264,34 @@ export interface Heartbeat {
   perCategory: Record<string, { universe: number; scanned: number; signals: number }>;
   lastDeliveryAt: number | null;
   now: number;
+  /** Paired Telegram username of the requester (shown, never secrets). */
+  pairingUsername?: string | null;
+  /** Latest signal_history timestamp the bot can serve. */
+  lastSignalAt?: string | null;
+  /** Today's per-category signal counts. */
+  todayCounts?: { crypto: number; stocks: number; commodities: number };
+  /** Watchdog alert state: true = alerting, false = armed, null = unknown. */
+  watchdogAlerting?: boolean | null;
 }
 
 /** ONLINE only from a fresh heartbeat — never from mere DB existence. */
 export function formatStatus(h: Heartbeat): string {
   const STALE_AFTER_MS = 15 * 60_000;
   const online = h.lastRunAt !== null && h.now - h.lastRunAt <= STALE_AFTER_MS;
+  const wd =
+    h.watchdogAlerting === true
+      ? "⚠ ALERTING"
+      : h.watchdogAlerting === false
+        ? "ARMED"
+        : "UNKNOWN";
+  const today = h.todayCounts;
   const lines = [
     `${online ? "🟢" : "🟠"} CryptoIn Scanner`,
     "",
     `Status: ${online ? "ONLINE" : "Scanner may be delayed"}`,
     "",
     `Last scan: ${h.lastRunAt === null ? "—" : fmtTime(new Date(h.lastRunAt).toISOString())}`,
+    ...(h.lastSignalAt ? [`Last signal: ${fmtDateTime(h.lastSignalAt)}`] : []),
     "",
   ];
   for (const cat of ["crypto", "stocks", "commodities"] as const) {
@@ -284,9 +300,17 @@ export function formatStatus(h: Heartbeat): string {
     lines.push(`${label}: ${c ? `${c.universe} markets` : "—"}`);
     lines.push("");
   }
+  if (today) {
+    lines.push("Signals today:");
+    lines.push(`Crypto: ${today.crypto}`);
+    lines.push(`Stocks: ${today.stocks}`);
+    lines.push(`Commodities: ${today.commodities}`);
+    lines.push("");
+  }
   lines.push(`Last Telegram delivery: ${h.lastDeliveryAt === null ? "—" : fmtTime(new Date(h.lastDeliveryAt).toISOString())}`);
   lines.push("");
-  lines.push("Telegram: Connected");
+  lines.push(`Telegram: CONNECTED${h.pairingUsername ? ` @${h.pairingUsername}` : ""}`);
+  lines.push(`Watchdog: ${wd}`);
   return lines.join("\n");
 }
 
@@ -308,7 +332,6 @@ export function splitMessage(text: string, max = 3500): string[] {
   if (cur !== "") chunks.push(cur);
   return chunks.length > 0 ? chunks : [text.slice(0, max)];
 }
-
 
 interface TelegramUpdate {
   message?: {
@@ -487,11 +510,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   // ---- Read-only commands: pairing gate first ---------------------------
   const connRes = await db(
-    `telegram_connections?telegram_chat_id=eq.${encodeURIComponent(chat)}&select=user_id,enabled`,
+    `telegram_connections?telegram_chat_id=eq.${encodeURIComponent(chat)}&select=user_id,enabled,telegram_username`,
   );
   const conn =
     connRes.status === 200 && Array.isArray(connRes.json) && connRes.json.length > 0
-      ? (connRes.json[0] as { user_id: string; enabled: boolean })
+      ? (connRes.json[0] as { user_id: string; enabled: boolean; telegram_username: string | null })
       : null;
   if (!conn) {
     await botSend(botToken, chat, UNPAIRED_MESSAGE);
@@ -527,9 +550,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         return ok();
       }
       case "status": {
-        const st = await db(
-          `scanner_state?key=eq.cron-monitor&select=value`,
-        );
+        const st = await db(`scanner_state?key=eq.cron-monitor&select=value`);
         let lastRunAt: number | null = null;
         let perCategory: Record<string, { universe: number; scanned: number; signals: number }> = {};
         let lastDeliveryAt: number | null = null;
@@ -538,7 +559,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
             lastRun?: {
               at?: unknown;
               perCategory?: unknown;
-              delivered?: unknown;
               lastDeliveryAt?: unknown;
             };
           } | undefined;
@@ -559,7 +579,46 @@ Deno.serve(async (req: Request): Promise<Response> => {
             }
           }
         }
-        await reply(formatStatus({ lastRunAt, perCategory, lastDeliveryAt, now: Date.now() }));
+        // Latest servable signal + today's counts (bounded reads, indexed).
+        let lastSignalAt: string | null = null;
+        const todayCounts = { crypto: 0, stocks: 0, commodities: 0 };
+        const latest = await admin.query(`signal_history?select=last_seen,category&order=last_seen.desc&limit=1`);
+        if (latest && latest.length > 0 && typeof latest[0].last_seen === "string") {
+          lastSignalAt = latest[0].last_seen;
+        }
+        const midnight = new Date();
+        midnight.setUTCHours(0, 0, 0, 0);
+        const today = await admin.query(
+          `signal_history?last_seen=gte.${encodeURIComponent(midnight.toISOString())}&select=category&limit=500`,
+        );
+        if (today) {
+          for (const r of today) {
+            if (r.category === "crypto") todayCounts.crypto += 1;
+            else if (r.category === "stocks") todayCounts.stocks += 1;
+            else if (r.category === "commodities") todayCounts.commodities += 1;
+          }
+        }
+        // Watchdog arming state (null row = unknown, never an error).
+        let watchdogAlerting: boolean | null = null;
+        const wd = await db(`scanner_state?key=eq.watchdog&select=value`);
+        if (wd.status === 200 && Array.isArray(wd.json) && wd.json.length > 0) {
+          const wv = (wd.json[0] as { value?: unknown }).value as { alertedAt?: unknown } | undefined;
+          if (wv && typeof wv === "object") {
+            watchdogAlerting = typeof wv.alertedAt === "number" ? true : false;
+          }
+        }
+        await reply(
+          formatStatus({
+            lastRunAt,
+            perCategory,
+            lastDeliveryAt,
+            now: Date.now(),
+            pairingUsername: conn.telegram_username,
+            lastSignalAt,
+            todayCounts,
+            watchdogAlerting,
+          }),
+        );
         return ok();
       }
       case "signals": {
