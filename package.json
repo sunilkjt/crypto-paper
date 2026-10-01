@@ -12,7 +12,8 @@
     "scan:cron": "tsx scripts/scan-cron.ts",
     "scan:watchdog": "tsx scripts/cron-watchdog.ts",
     "supabase:doctor": "tsx scripts/supabase-doctor.ts",
-    "bundle:webhook": "node scripts/bundle-webhook.mjs"
+    "bundle:webhook": "node scripts/bundle-webhook.mjs",
+    "smoke:entries": "node scripts/smoke-entries.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
