@@ -1,0 +1,52 @@
+# Signal-outcome resolver (performance analytics, laptop closed).
+#
+# Every 15 minutes: read unresolved signal_history rows (outcome IS NULL),
+# replay post-signal candles with the same conservative thirds rules as
+# paper trading, and write terminal verdicts back (WIN/LOSS/BREAKEVEN/
+# EXPIRED/UNKNOWN). OPEN rows stay unresolved for the next run; resolved
+# rows are never rewritten.
+#
+# Read-only toward strategy: no scoring, no thresholds, no notifications,
+# no AI, no cron-state touches. Requires migration 0008 applied first
+# (the job aborts with a clear message when outcome columns are missing).
+#
+# Required repo secrets (Settings → Secrets → Actions — server-side only):
+#   SUPABASE_URL              (same value as VITE_SUPABASE_URL)
+#   SUPABASE_SERVICE_ROLE_KEY (Project Settings → API → service_role)
+#
+# Tunables below (env): batch size, concurrency, outcome lifetime hours.
+# Pause the schedule anytime: Actions → "Signal outcome resolver" → Disable.
+
+name: Signal outcome resolver
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signal-resolve
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run resolve:outcomes
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RESOLVE_LIMIT: "200"
+          RESOLVE_CONCURRENCY: "4"
+          OUTCOME_LIFETIME_HOURS: "24"

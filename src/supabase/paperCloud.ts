@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { unrealizedFor, type PaperPosition, type PaperSnapshot } from "../paper";
+import { DEFAULT_MAX_NOTIONAL_TO_EQUITY, unrealizedFor, type PaperPosition, type PaperSnapshot } from "../paper";
 import type { PaperAccountRow, PaperPositionRow, PaperTradeRow } from "./types";
 
 /**
@@ -353,6 +353,9 @@ export function cloudToSnapshot(
       feeRate: account.fee_rate,
       autoPaperTrading: account.auto_paper_trading,
       autoMinStrength: account.auto_min_strength,
+      // Server rows predate the client-side notional guard — fall back to
+      // the default rather than inventing a stored value (no migration).
+      maxNotionalToEquity: DEFAULT_MAX_NOTIONAL_TO_EQUITY,
     },
     balance: account.current_balance,
     realizedPnl: account.realized_pnl,

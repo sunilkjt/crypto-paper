@@ -3,6 +3,7 @@ import {
   closePaperPosition,
   emptySnapshot,
   openPaperPosition,
+  validatePaperOpen,
   unrealizedFor,
   type OpenPaperArgs,
 } from "./portfolio";
@@ -134,16 +135,30 @@ export class PaperEngine {
   }
 
   open(args: Omit<OpenPaperArgs, "equity" | "config">, marks: Map<string, number>): PaperPosition | null {
+    return this.tryOpen(args, marks).position;
+  }
+
+  /**
+   * Open with a truthful failure reason. Validation failures (size,
+   * stop, balance, notional cap) are never misreported as duplicates:
+   * callers surface `error` directly instead of guessing.
+   */
+  tryOpen(
+    args: Omit<OpenPaperArgs, "equity" | "config">,
+    marks: Map<string, number>,
+  ): { position: PaperPosition | null; error: string | null } {
     // One open position per symbol — no pyramiding the same coin.
     if (this.snapshot.positions.some((p) => p.symbol === args.symbol && p.closedAt === null)) {
-      return null;
+      return { position: null, error: "Already have an open simulated position on this symbol." };
     }
     const equity = this.equity(marks);
+    const validation = validatePaperOpen({ ...args, equity, config: this.snapshot.config });
+    if (!validation.ok) return { position: null, error: validation.message };
     const position = openPaperPosition({ ...args, equity, config: this.snapshot.config });
-    if (!position) return null;
+    if (!position) return { position: null, error: validation.message ?? "Calculated position size is invalid." };
     this.snapshot.positions = [position, ...this.snapshot.positions];
     this.commit();
-    return position;
+    return { position, error: null };
   }
 
   /** Apply a mark price to every open position. Returns closed positions. */

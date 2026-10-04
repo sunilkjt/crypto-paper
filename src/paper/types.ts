@@ -20,6 +20,22 @@ export interface PaperConfig {
   autoPaperTrading: boolean;
   /** Minimum strength for auto entries. */
   autoMinStrength: number;
+  /**
+   * Defensive guard: a position's notional may never exceed
+   * `equity * maxNotionalToEquity`. Client-side safety only (not
+   * persisted server-side); older snapshots fall back to the default.
+   */
+  maxNotionalToEquity?: number;
+}
+
+export const DEFAULT_MAX_NOTIONAL_TO_EQUITY = 5;
+
+/** Minimum stop distance as a fraction of entry (5 bps). Tighter stops are rejected. */
+export const MIN_STOP_DISTANCE_PCT = 0.0005;
+
+export function maxNotionalOf(config: PaperConfig): number {
+  const v = config.maxNotionalToEquity;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : DEFAULT_MAX_NOTIONAL_TO_EQUITY;
 }
 
 export const DEFAULT_PAPER_CONFIG: PaperConfig = {
@@ -28,6 +44,7 @@ export const DEFAULT_PAPER_CONFIG: PaperConfig = {
   feeRate: 0.0005,
   autoPaperTrading: false,
   autoMinStrength: 75,
+  maxNotionalToEquity: DEFAULT_MAX_NOTIONAL_TO_EQUITY,
 };
 
 export interface PaperPosition {

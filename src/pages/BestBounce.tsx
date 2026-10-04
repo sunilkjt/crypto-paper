@@ -43,6 +43,11 @@ export default function BestBounce() {
           </div>
         }
       />
+      <p className="mb-3 text-xs leading-relaxed text-slate-500">
+        Bounce-focused setups from the shared browser scan. The full ranked list lives under{" "}
+        <Link to="/scanner" className="font-bold text-cyan-300 hover:underline">Scanner</Link>
+        {" "}· broader Stocks/Commodities coverage under <Link to="/markets" className="font-bold text-cyan-300 hover:underline">Markets</Link>.
+      </p>
 
       <Card>
         <CardHeader

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Search } from "lucide-react";
 import { Card, CardHeader, PageHeader } from "../components/ui";
 import { AiStatusBadge } from "../components/AiStatusBadge";
@@ -22,7 +22,7 @@ function parseCategoryTab(v: string | null): CategoryTab {
   return v === "crypto" || v === "stocks" || v === "commodities" ? v : "ALL";
 }
 
-type SortKey = "strength" | "newest" | "riskReward" | "dayVolumeNotional" | "dayChangePct" | "rsi" | "fundingRate";
+type SortKey = "strength" | "newest" | "riskReward" | "dayVolumeNotional" | "dayChangePct" | "rsi" | "fundingRate" | "symbol";
 type DirectionFilter = "ALL" | "LONG" | "SHORT" | "WAIT";
 type SetupFilter = "ALL" | SetupType;
 type StrengthFilter = "ALL" | "WATCH" | "SETUP" | "STRONG" | "HIGH";
@@ -38,7 +38,10 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "dayChangePct", label: "24h Change" },
   { value: "rsi", label: "RSI" },
   { value: "fundingRate", label: "Funding" },
+  { value: "symbol", label: "Symbol" },
 ];
+
+export const MIN_SCORE_OPTIONS = [0, 60, 70, 80, 90] as const;
 
 /** TFs agreeing with the signal side (agreement beyond dust). */
 export function mtfAgreementCount(
@@ -67,6 +70,7 @@ export default function Scanner() {
   const [strengthFilter, setStrengthFilter] = useState<StrengthFilter>("ALL");
   const [volFilter, setVolFilter] = useState<VolumeFilter>("ALL");
   const [starredOnly, setStarredOnly] = useState(false);
+  const [minScore, setMinScore] = useState<number>(0);
   const [watchlist, setWatchlist] = useState<string[]>(() => loadWatchlist());
   // Category tab persisted in the hash URL (#/scanner?category=stocks) so a
   // refresh keeps the filter. Default ALL preserves today's full view.
@@ -99,6 +103,7 @@ export default function Scanner() {
       });
     }
     if (volFilter !== "ALL") rows = rows.filter((r) => r.signal.volume === volFilter);
+    if (minScore > 0) rows = rows.filter((r) => r.signal.signalStrength >= minScore);
     const dir = sortDir === "asc" ? 1 : -1;
     // Nulls always sort last (missing data never outranks real values).
     const cmpNull = (av: number | null, bv: number | null) => {
@@ -109,6 +114,8 @@ export default function Scanner() {
     };
     return [...rows].sort((a, b) => {
       switch (sortKey) {
+        case "symbol":
+          return a.symbol.localeCompare(b.symbol) * dir;
         case "strength":
           return (a.signal.signalStrength - b.signal.signalStrength) * dir;
         case "newest":
@@ -125,7 +132,7 @@ export default function Scanner() {
           return cmpNull(prices.get(a.symbol)?.fundingRate ?? null, prices.get(b.symbol)?.fundingRate ?? null);
       }
     });
-  }, [summary, query, starredOnly, watchlist, catTab, mainSymbols, dirFilter, setupFilter, strengthFilter, volFilter, sortKey, sortDir, prices]);
+  }, [summary, query, starredOnly, watchlist, catTab, mainSymbols, dirFilter, setupFilter, strengthFilter, volFilter, minScore, sortKey, sortDir, prices]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -149,6 +156,7 @@ export default function Scanner() {
     setupFilter !== "ALL" ||
     strengthFilter !== "ALL" ||
     volFilter !== "ALL" ||
+    minScore > 0 ||
     starredOnly;
 
   const clearFilters = () => {
@@ -159,6 +167,7 @@ export default function Scanner() {
     setSetupFilter("ALL");
     setStrengthFilter("ALL");
     setVolFilter("ALL");
+    setMinScore(0);
     setStarredOnly(false);
     setPage(0);
   };
@@ -181,6 +190,12 @@ export default function Scanner() {
           </div>
         }
       />
+      <p className="mb-3 text-xs leading-relaxed text-slate-500">
+        Fast browser signal scan over the highest-volume universe. For the broader Stocks/Commodities HIP-3 scan use{" "}
+        <Link to="/markets" className="font-bold text-cyan-300 hover:underline">Markets</Link>
+        {" "}· bounce-only setups live under <Link to="/bounce" className="font-bold text-cyan-300 hover:underline">Bounce</Link>.
+        Browser Stocks/Commodities tabs can appear empty here — that universe is volume-capped by design.
+      </p>
 
       <Card>
         <CardHeader
@@ -251,6 +266,19 @@ export default function Scanner() {
           <FilterGroup label="Setup" options={["ALL", "BOUNCE", "BREAKOUT", "BREAKDOWN", "PULLBACK", "REVERSAL", "TREND", "RANGE"]} value={setupFilter} onPick={(v) => setFilterAndPage(setSetupFilter, v as SetupFilter)} />
           <FilterGroup label="Strength" options={["ALL", "WATCH", "SETUP", "STRONG", "HIGH"]} value={strengthFilter} onPick={(v) => setFilterAndPage(setStrengthFilter, v as StrengthFilter)} />
           <FilterGroup label="Volume" options={["ALL", "HIGH", "NORMAL", "LOW"]} value={volFilter} onPick={(v) => setFilterAndPage(setVolFilter, v as VolumeFilter)} />
+          <span className="inline-flex flex-wrap items-center gap-1.5" role="group" aria-label="Minimum score filter">
+            <span className="font-bold tracking-widest text-slate-500 uppercase">Min Score</span>
+            {MIN_SCORE_OPTIONS.map((n) => (
+              <button
+                key={n}
+                onClick={() => setFilterAndPage(setMinScore, n)}
+                aria-pressed={minScore === n}
+                className={cn("min-h-[44px] rounded-lg border px-3 font-bold", minScore === n ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" : "border-slate-800 text-slate-500 hover:border-slate-700")}
+              >
+                {n === 0 ? "ALL" : `≥${n}`}
+              </button>
+            ))}
+          </span>
           <button
             onClick={() => setFilterAndPage(setStarredOnly, !starredOnly)}
             aria-pressed={starredOnly}

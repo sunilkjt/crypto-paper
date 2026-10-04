@@ -36,6 +36,7 @@ export default function PaperTrading() {
   const [riskInput, setRiskInput] = useState(String(snap.config.riskPerTrade * 100));
   const [autoMin, setAutoMin] = useState(String(snap.config.autoPaperTrading ? snap.config.autoMinStrength : 75));
   const [confirmReset, setConfirmReset] = useState(false);
+  const [closeId, setCloseId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [coinFilter, setCoinFilter] = useState("ALL");
   const [migrating, setMigrating] = useState(false);
@@ -120,6 +121,7 @@ export default function PaperTrading() {
   const open = snap.positions.filter((p) => p.closedAt === null);
   const closed = snap.positions.filter((p) => p.closedAt !== null);
   const equity = open.reduce((a, p) => a + unrealizedFor(p, marks.get(p.symbol) ?? NaN), snap.balance);
+  const unrealTotal = equity - snap.balance;
   const totalPnl = equity - snap.config.startingBalance;
   const winRate = snap.closedCount > 0 ? (snap.wins / snap.closedCount) * 100 : 0;
   const avgR =
@@ -163,6 +165,10 @@ export default function PaperTrading() {
   };
 
   const selected = open.find((p) => p.id === selectedId) ?? open[0] ?? null;
+  const closeTarget = open.find((p) => p.id === closeId) ?? null;
+  const closeMark = closeTarget ? (marks.get(closeTarget.symbol) ?? NaN) : NaN;
+  const closeUnreal = closeTarget ? unrealizedFor(closeTarget, closeMark) : 0;
+  const closeEstimate = closeTarget ? closeTarget.realized - closeTarget.fees + closeUnreal : 0;
 
   const handleReset = async () => {
     engine.reset({
@@ -242,14 +248,21 @@ export default function PaperTrading() {
         <>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Starting Balance" value={`$${snap.config.startingBalance.toLocaleString()}`} />
+        <Stat label="Cash / Available" value={`$${snap.balance.toFixed(2)}`} sub="buying power at fixed 1×" />
         <Stat label="Current Equity" value={`$${equity.toFixed(2)}`} tone={equity >= snap.config.startingBalance ? "up" : "down"} />
+        <Stat label="Unrealized P&L" value={`${unrealTotal >= 0 ? "+" : ""}$${unrealTotal.toFixed(2)}`} tone={unrealTotal >= 0 ? "up" : "down"} />
         <Stat label="Realized PnL" value={`${snap.realizedPnl >= 0 ? "+" : ""}$${snap.realizedPnl.toFixed(2)}`} tone={snap.realizedPnl >= 0 ? "up" : "down"} />
         <Stat label="Total PnL" value={`${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}`} tone={totalPnl >= 0 ? "up" : "down"} />
         <Stat label="Win Rate" value={`${winRate.toFixed(1)}%`} sub={`${snap.wins}/${snap.closedCount}`} />
+        <Stat label="Open Positions" value={String(open.length)} />
         <Stat label="Avg R / PF" value={`${avgR.toFixed(2)}R / ${profitFactor === Infinity ? "∞" : profitFactor.toFixed(2)}`} />
         <Stat label="Max Drawdown" value={`${snap.maxDrawdownPct.toFixed(2)}%`} />
         <Stat label="TP1/2/3 %" value={`${tpRate(1)} / ${tpRate(2)} / ${tpRate(3)}`} />
+        <Stat label="Leverage" value="1× fixed" sub="Paper trading currently uses fixed 1× leverage" />
       </div>
+      <p className="mt-2 text-[11px] text-slate-600">
+        Paper trading currently uses fixed 1× leverage (margin equals notional). SL/TP editing is not currently supported — positions follow the plan set at entry.
+      </p>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <Card>
@@ -302,10 +315,10 @@ export default function PaperTrading() {
             <p className="px-5 py-8 text-center text-sm text-slate-500">No open simulated positions. Take one from a coin page or enable auto paper trading.</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-left text-xs" style={{ minWidth: 760 }}>
+              <table className="w-full border-collapse text-left text-xs" style={{ minWidth: 1080 }}>
                 <thead>
                   <tr className="border-b border-slate-800 text-[10px] tracking-widest text-slate-500 uppercase">
-                    {["Coin", "Dir", "Entry", "Current", "SL", "TP1/2/3", "PnL", "R", ""].map((c) => (
+                    {["Coin", "Dir", "Size", "Notional", "Entry", "Current", "SL", "TP1/2/3", "Setup", "Str", "PnL", "R", ""].map((c) => (
                       <th key={c} className="px-3 py-2.5 font-semibold whitespace-nowrap">{c}</th>
                     ))}
                   </tr>
@@ -319,14 +332,18 @@ export default function PaperTrading() {
                       <tr key={p.id} className={cn("border-b border-slate-800/50 font-mono last:border-0 hover:bg-slate-900/50", selected?.id === p.id && "bg-slate-900/70")}>
                         <td className="px-3 py-2"><button onClick={() => setSelectedId(p.id)} className="font-bold text-white hover:text-cyan-300">{p.symbol}</button><span className="ml-1 text-[10px] text-slate-500">{p.status}</span><span className="mt-0.5 block w-fit"><CategoryChip symbol={p.symbol} mainSymbols={mainSymbols} /></span></td>
                         <td className={cn("px-3 py-2 font-bold", p.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>{p.direction}</td>
+                        <td className="px-3 py-2 text-slate-300">{fmt(p.size)}</td>
+                        <td className="px-3 py-2 text-slate-300">${fmt(p.notional, 2)}</td>
                         <td className="px-3 py-2 text-slate-300">{fmt(p.entry)}</td>
                         <td className="px-3 py-2 text-slate-100">{fmt(mark)}</td>
                         <td className="px-3 py-2 text-slate-300">{fmt(p.invalidation)}</td>
                         <td className="px-3 py-2 text-slate-300">{fmt(p.tp1)}/{fmt(p.tp2)}/{fmt(p.tp3)}</td>
+                        <td className="px-3 py-2 font-sans text-[11px] text-slate-400">{p.setupType && p.setupType !== "CLOUD" ? p.setupType : "Not recorded"}</td>
+                        <td className="px-3 py-2 text-slate-200">{p.strength > 0 ? p.strength : "—"}</td>
                         <td className={cn("px-3 py-2 font-bold", unreal >= 0 ? "text-emerald-300" : "text-rose-300")}>{unreal >= 0 ? "+" : ""}{unreal.toFixed(2)}</td>
                         <td className="px-3 py-2 text-slate-200">{r.toFixed(2)}</td>
                         <td className="px-3 py-2">
-                          <button onClick={() => engine.close(p.id, mark, "Manual close from dashboard.")} className="rounded-lg border border-slate-700 px-2 py-1 font-sans text-[11px] font-bold text-slate-300 hover:bg-slate-800">
+                          <button onClick={() => setCloseId(p.id)} className="rounded-lg border border-slate-700 px-2 py-1 font-sans text-[11px] font-bold text-slate-300 hover:bg-slate-800">
                             Close
                           </button>
                         </td>
@@ -339,6 +356,44 @@ export default function PaperTrading() {
           )}
         </Card>
       </div>
+
+      {closeTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setCloseId(null)} role="dialog" aria-modal="true" aria-label={`Close ${closeTarget.symbol} position`}>
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm font-extrabold text-white">Close this simulated position? <span className="text-amber-300">(NO REAL ORDER)</span></p>
+            <div className="mt-3 space-y-1.5 font-mono text-[13px]">
+              {[
+                ["Symbol", closeTarget.symbol],
+                ["Direction", closeTarget.direction],
+                ["Entry", fmt(closeTarget.entry)],
+                ["Current price", fmt(closeMark)],
+                ["Size", `${fmt(closeTarget.size)} ≈ $${fmt(closeTarget.size * closeTarget.entry, 2)} notional`],
+                ["Current P&L", `${closeUnreal >= 0 ? "+" : ""}${closeUnreal.toFixed(2)}`],
+                ["Est. realized on close", `${closeEstimate >= 0 ? "+" : ""}${closeEstimate.toFixed(2)}`],
+              ].map(([k, v]) => (
+                <span key={k as string} className="flex items-center justify-between border-b border-dashed border-slate-800 pb-1.5">
+                  <span className="font-sans text-slate-500">{k}</span>
+                  <span className="font-bold text-slate-100">{v}</span>
+                </span>
+              ))}
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={() => {
+                  engine.close(closeTarget.id, closeMark, "Manual close from dashboard.");
+                  setCloseId(null);
+                }}
+                className="flex-1 rounded-xl bg-rose-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-rose-400"
+              >
+                Close Position
+              </button>
+              <button onClick={() => setCloseId(null)} className="rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-bold text-slate-300">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {selected && (
         <PositionChart position={selected} mark={marks.get(selected.symbol) ?? NaN} />
@@ -360,20 +415,22 @@ export default function PaperTrading() {
           <p className="px-5 py-8 text-center text-sm text-slate-500">No closed simulated trades yet.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-xs" style={{ minWidth: 860 }}>
-              <thead>
-                <tr className="border-b border-slate-800 text-[10px] tracking-widest text-slate-500 uppercase">
-                  {["Date", "Coin", "Dir", "Entry", "Exit", "Result", "PnL", "R", "Duration"].map((c) => (
-                    <th key={c} className="px-3 py-2.5 font-semibold whitespace-nowrap">{c}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((p) => (
-                  <tr key={p.id} className="border-b border-slate-800/50 font-mono last:border-0 hover:bg-slate-900/50">
-                    <td className="px-3 py-2 whitespace-nowrap text-slate-400">{new Date(p.openedAt).toLocaleString()}</td>
-                    <td className="px-3 py-2 font-bold text-white">{p.symbol}<span className="mt-0.5 block w-fit font-sans font-normal"><CategoryChip symbol={p.symbol} mainSymbols={mainSymbols} /></span></td>
-                    <td className={cn("px-3 py-2 font-bold", p.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>{p.direction}</td>
+            <table className="w-full border-collapse text-left text-xs" style={{ minWidth: 980 }}>
+                <thead>
+                  <tr className="border-b border-slate-800 text-[10px] tracking-widest text-slate-500 uppercase">
+                    {["Date", "Coin", "Dir", "Setup", "Str", "Entry", "Exit", "Result", "PnL", "R", "Duration"].map((c) => (
+                      <th key={c} className="px-3 py-2.5 font-semibold whitespace-nowrap">{c}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((p) => (
+                    <tr key={p.id} className="border-b border-slate-800/50 font-mono last:border-0 hover:bg-slate-900/50">
+                      <td className="px-3 py-2 whitespace-nowrap text-slate-400">{new Date(p.openedAt).toLocaleString()}</td>
+                      <td className="px-3 py-2 font-bold text-white">{p.symbol}<span className="mt-0.5 block w-fit font-sans font-normal"><CategoryChip symbol={p.symbol} mainSymbols={mainSymbols} /></span></td>
+                      <td className={cn("px-3 py-2 font-bold", p.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>{p.direction}</td>
+                      <td className="px-3 py-2 font-sans text-[11px] text-slate-400">{p.setupType && p.setupType !== "CLOUD" ? p.setupType : "Not recorded"}</td>
+                      <td className="px-3 py-2 text-slate-200">{p.strength > 0 ? p.strength : "—"}</td>
                     <td className="px-3 py-2 text-slate-300">{fmt(p.entry)}</td>
                     <td className="px-3 py-2 text-slate-300">{p.closeReason ?? p.status}</td>
                     <td className="px-3 py-2 text-slate-300">{p.status}</td>

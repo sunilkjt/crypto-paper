@@ -10,6 +10,8 @@ import {
 } from "recharts";
 import { Card, CardHeader, PageHeader } from "../components/ui";
 import { ConnectionBadge } from "../components/ConnectionBadge";
+import { useMarkets } from "../market/store";
+import { classifyMarket } from "../market/classify";
 import {
   DEFAULT_BACKTEST_CONFIG,
   runBacktest,
@@ -21,7 +23,7 @@ import type { Timeframe } from "../market/hyperliquid/types";
 import { cn } from "../lib/cn";
 
 const DAY = 86_400_000;
-const SYMBOLS = ["BTC", "ETH", "OP", "SOL"];
+const FALLBACK_SYMBOLS = ["BTC", "ETH", "OP", "SOL"];
 
 function toInputValue(ts: number): string {
   const d = new Date(ts);
@@ -51,6 +53,22 @@ export default function Backtest() {
   const [tradeSort, setTradeSort] = useState<"date" | "r" | "pnl">("date");
   const [tradeFilter, setTradeFilter] = useState("ALL");
   const abortRef = useRef(false);
+
+  // Preset chips derived from the live discovered universe — never a
+  // hardcoded stock/commodity list. Falls back to majors before load.
+  const { markets } = useMarkets();
+  const presets = useMemo(() => {
+    if (markets.length === 0) return { crypto: FALLBACK_SYMBOLS, stocks: [] as string[], commodities: [] as string[] };
+    const main = new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase()));
+    const byVol = [...markets].sort((a, b) => (b.dayVolumeNotional ?? 0) - (a.dayVolumeNotional ?? 0));
+    const pick = (cls: "crypto" | "stocks" | "commodities", n: number) =>
+      byVol.filter((m) => classifyMarket(m.symbol, main) === cls).slice(0, n).map((m) => m.symbol);
+    return { crypto: pick("crypto", 4), stocks: pick("stocks", 4), commodities: pick("commodities", 4) };
+  }, [markets]);
+  const comparePool = useMemo(
+    () => [...presets.crypto, ...presets.stocks, ...presets.commodities].filter((s) => s !== symbol.toUpperCase()).slice(0, 8),
+    [presets, symbol],
+  );
 
   const symbols = useMemo(
     () => [symbol.toUpperCase(), ...compare.map((s) => s.toUpperCase()).filter((s) => s !== symbol.toUpperCase())].slice(0, 4),
@@ -134,16 +152,44 @@ export default function Backtest() {
           <label className="block">
             <span className="mb-1 block text-[11px] font-bold tracking-widest text-slate-500 uppercase">Symbol</span>
             <div className="flex flex-wrap gap-1">
-              {SYMBOLS.map((s) => (
+              {presets.crypto.map((s) => (
                 <button key={s} onClick={() => setSymbol(s)} className={cn("rounded-lg border px-2.5 py-1.5 text-xs font-bold", symbol === s ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" : "border-slate-800 text-slate-400")}>
                   {s}
                 </button>
               ))}
-              <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9:]/g, ""))} className="w-20 rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs font-bold text-white" />
+              <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9:]/g, ""))} placeholder="BTC, xyz:NVDA…" className="w-28 rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs font-bold text-white" />
             </div>
+            {(presets.stocks.length > 0 || presets.commodities.length > 0) && (
+              <>
+                <span className="mt-2 block text-[11px] text-slate-600">Stocks:</span>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {presets.stocks.length === 0 ? (
+                    <span className="text-[11px] text-slate-600">none discovered</span>
+                  ) : (
+                    presets.stocks.map((s) => (
+                      <button key={s} onClick={() => setSymbol(s)} className={cn("rounded-lg border px-2 py-1 text-[11px] font-bold", symbol === s ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" : "border-slate-800 text-slate-500")}>
+                        {s}
+                      </button>
+                    ))
+                  )}
+                </div>
+                <span className="mt-2 block text-[11px] text-slate-600">Commodities:</span>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {presets.commodities.length === 0 ? (
+                    <span className="text-[11px] text-slate-600">none discovered</span>
+                  ) : (
+                    presets.commodities.map((s) => (
+                      <button key={s} onClick={() => setSymbol(s)} className={cn("rounded-lg border px-2 py-1 text-[11px] font-bold", symbol === s ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" : "border-slate-800 text-slate-500")}>
+                        {s}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
             <span className="mt-1 block text-[11px] text-slate-600">Compare:</span>
             <div className="mt-1 flex flex-wrap gap-1">
-              {SYMBOLS.filter((s) => s !== symbol).map((s) => (
+              {comparePool.filter((s) => s !== symbol).map((s) => (
                 <button
                   key={s}
                   onClick={() => setCompare((c) => (c.includes(s) ? c.filter((x) => x !== s) : [...c, s].slice(0, 3)))}

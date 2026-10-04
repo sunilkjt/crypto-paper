@@ -10,9 +10,11 @@
     "preview": "vite preview",
     "test": "vitest run",
     "scan:cron": "tsx scripts/scan-cron.ts",
+    "resolve:outcomes": "tsx scripts/resolve-outcomes.ts",
     "scan:watchdog": "tsx scripts/cron-watchdog.ts",
     "supabase:doctor": "tsx scripts/supabase-doctor.ts",
     "bundle:webhook": "node scripts/bundle-webhook.mjs",
+    "bundle:scan": "node scripts/bundle-scan.mjs",
     "smoke:entries": "node scripts/smoke-entries.mjs"
   },
   "dependencies": {

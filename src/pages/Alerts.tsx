@@ -4,6 +4,8 @@ import { Card, CardHeader, PageHeader, TableShell } from "../components/ui";
 import { CategoryChip } from "../components/SignalCard";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { useMarkets } from "../market/store";
+import { useTelegramConnection } from "../supabase/telegram";
+import { isStaleTimestamp } from "../alerts/expiry";
 import type { MarketClass } from "../market/classify";
 import {
   alertCoinNavigation,
@@ -38,7 +40,11 @@ export default function Alerts() {
   const [events, setEvents] = useState<SignalEvent[]>([]);
   const [filters, setFilters] = useState<AlertFilters>({ ...EMPTY_ALERT_FILTERS });
   const [catFilter, setCatFilter] = useState<"ALL" | MarketClass>("ALL");
+  const [freshFilter, setFreshFilter] = useState<"ALL" | "FRESH" | "STALE">("ALL");
+  const [minScore, setMinScore] = useState(0);
   const { markets, connection } = useMarkets();
+  const tg = useTelegramConnection();
+  const tgConnected = tg.state.phase === "ready" && tg.state.status.connected;
   const navigate = useNavigate();
   const mainSymbols = useMemo(
     () => new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase())),
@@ -48,10 +54,13 @@ export default function Alerts() {
   useEffect(() => subscribeAlerts(setEvents), []);
 
   const prices = useMemo(() => new Map(markets.map((m) => [m.symbol, m.markPrice])), [markets]);
-  const filtered = useMemo(
-    () => filterAlerts(events, { ...filters, category: catFilter }).slice(0, 200),
-    [events, filters, catFilter],
-  );
+  const filtered = useMemo(() => {
+    const at = Date.now();
+    let list = filterAlerts(events, { ...filters, category: catFilter });
+    if (freshFilter !== "ALL") list = list.filter((e) => (freshFilter === "STALE") === isStaleTimestamp(e.timestamp, at));
+    if (minScore > 0) list = list.filter((e) => e.currentStrength >= minScore);
+    return list.slice(0, 200);
+  }, [events, filters, catFilter, freshFilter, minScore]);
   const counts = useMemo(() => alertStatusCounts(events), [events]);
   const coins = useMemo(() => ["ALL", ...new Set(events.map((e) => e.symbol)).values()].sort(), [events]);
 
@@ -90,6 +99,10 @@ export default function Alerts() {
       <Card>
         <CardHeader title="Alert History" subtitle="Timestamp · coin · direction · setup · strength · event · status" />
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-800/70 px-4 py-3 text-xs">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-800 bg-slate-950 px-3 py-1.5 font-bold text-slate-300" title="Telegram push delivery state (pairing lives in Settings)">
+            <span aria-hidden="true">{tg.state.phase === "loading" ? "🟡" : tgConnected ? "🟢" : "⚪"}</span>
+            Telegram: {tg.state.phase === "loading" ? "checking…" : tgConnected ? "connected" : "not connected"}
+          </span>
           <select value={filters.coin} onChange={(e) => setFilters({ ...filters, coin: e.target.value })} aria-label="Coin filter" className="min-h-[44px] rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
             {coins.map((c) => (
               <option key={c} value={c}>{c === "ALL" ? "All coins" : c}</option>
@@ -108,6 +121,16 @@ export default function Alerts() {
           <select value={catFilter} onChange={(e) => setCatFilter(e.target.value as "ALL" | MarketClass)} aria-label="Market category filter" className="min-h-[44px] rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
             {(["ALL", "crypto", "stocks", "commodities", "other"] as const).map((c) => (
               <option key={c} value={c}>{c === "ALL" ? "All categories" : c === "crypto" ? "Crypto" : c === "stocks" ? "Stocks" : c === "commodities" ? "Commodities" : "Other"}</option>
+            ))}
+          </select>
+          <select value={freshFilter} onChange={(e) => setFreshFilter(e.target.value as "ALL" | "FRESH" | "STALE")} aria-label="Freshness filter" title="Fresh = alerted within 24h; Stale = older (kept for record, never deleted)" className="min-h-[44px] rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
+            {(["ALL", "FRESH", "STALE"] as const).map((f) => (
+              <option key={f} value={f}>{f === "ALL" ? "Fresh + stale" : f === "FRESH" ? "Current (<24h)" : "Stale (≥24h)"}</option>
+            ))}
+          </select>
+          <select value={String(minScore)} onChange={(e) => setMinScore(Number(e.target.value))} aria-label="Minimum score filter" className="min-h-[44px] rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 font-bold text-slate-300">
+            {[0, 60, 70, 80, 90].map((n) => (
+              <option key={n} value={n}>{n === 0 ? "Any score" : `Score ≥${n}`}</option>
             ))}
           </select>
           <button onClick={() => { clearAlertHistory(); }} className="ml-auto rounded-lg border border-slate-800 px-3 py-1.5 font-bold text-slate-500 hover:border-slate-700">
@@ -168,6 +191,15 @@ export default function Alerts() {
                     <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wider", e.status === "NEW" && "bg-cyan-400/10 text-cyan-300", e.status === "ACTIVE" && "bg-slate-800 text-slate-300", e.status === "READ" && "text-slate-600")}>
                       {e.status}
                     </span>
+                    {isStaleTimestamp(e.timestamp) ? (
+                      <span className="ml-1 inline-flex rounded-full border border-slate-700 px-2 py-0.5 text-[10px] font-bold tracking-wider text-slate-500" title="Alerted over 24h ago — kept for record">
+                        STALE
+                      </span>
+                    ) : (
+                      <span className="ml-1 inline-flex rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-bold tracking-wider text-emerald-300" title="Alerted within the last 24h">
+                        CURRENT
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     {!e.read && (

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Search } from "lucide-react";
 import { Card, CardHeader, DemoBadge, DirectionBadge, PageHeader, Stat } from "../components/ui";
 import { AiAnalysisCard } from "../components/AiAnalysisCard";
 import { NewsList } from "../components/NewsList";
@@ -15,10 +16,14 @@ import { useMarkets } from "../market/store";
 import { useMtfCandles, useSignal } from "../analysis/hooks";
 import { SUPPORTED_TIMEFRAMES } from "../market/hyperliquid/timeframes";
 import type { Timeframe } from "../market/hyperliquid/types";
+import type { Candle } from "../market/hyperliquid/types";
 import { lastEma } from "../indicators/ema";
 import { lastRsi } from "../indicators/rsi";
 import { lastMacd } from "../indicators/macd";
 import { lastAtr } from "../indicators/atr";
+import { detectSwings } from "../analysis/swings";
+import { buildLevels } from "../analysis/levels";
+import { classifyMarket, type MarketCategory } from "../market/classify";
 import { volumeStats } from "../indicators/volume";
 import { formatFundingRate } from "../market/hyperliquid/funding";
 import { formatOpenInterestNotional } from "../market/hyperliquid/openInterest";
@@ -189,7 +194,7 @@ function TakePaperTrade({ signal, coin, mark }: { signal: Signal; coin: string; 
 
   const confirm = () => {
     const marks = new Map([[coin, entry]]);
-    const pos = engine.open(
+    const { position: pos, error } = engine.tryOpen(
       {
         symbol: coin,
         timeframe: signal.timeframe,
@@ -204,7 +209,7 @@ function TakePaperTrade({ signal, coin, mark }: { signal: Signal; coin: string; 
       },
       marks,
     );
-    setDone(pos ? `Simulated ${pos.direction} opened: ${size.toFixed(4)} ${coin} @ ${fmt(entry)}.` : "Already have an open simulated position on this coin.");
+    setDone(pos ? `Simulated ${pos.direction} opened: ${size.toFixed(4)} ${coin} @ ${fmt(entry)}.` : (error ?? "Calculated position size is invalid."));
     setOpen(false);
   };
 
@@ -245,6 +250,165 @@ function TakePaperTrade({ signal, coin, mark }: { signal: Signal; coin: string; 
         </span>
       )}
     </span>
+  );
+}
+
+const LAST_COIN_KEY = "cryptoin:last-coin:v1";
+
+export function loadLastCoin(): string | null {
+  try {
+    const v = typeof localStorage !== "undefined" ? localStorage.getItem(LAST_COIN_KEY) : null;
+    return v && v.trim().length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastCoin(symbol: string) {
+  try {
+    localStorage?.setItem(LAST_COIN_KEY, symbol);
+  } catch {
+    // best effort
+  }
+}
+
+/** Symbol search over the live market universe (no hardcoded universe). */
+function SymbolSearch({ current }: { current: string }) {
+  const { markets } = useMarkets();
+  const navigate = useNavigate();
+  const [draft, setDraft] = useState("");
+  const [cat, setCat] = useState<"ALL" | MarketCategory>("ALL");
+  const mainSymbols = useMemo(
+    () => new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase())),
+    [markets],
+  );
+  const matches = useMemo(() => {
+    const q = draft.trim().toUpperCase();
+    if (q.length === 0) return [];
+    return markets
+      .filter((m) => m.symbol.toUpperCase().includes(q))
+      .filter((m) => cat === "ALL" || classifyMarket(m.symbol, mainSymbols) === cat)
+      .slice(0, 8);
+  }, [markets, draft, cat, mainSymbols]);
+  return (
+    <div className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => navigate(-1)}
+          className="min-h-[44px] rounded-xl border border-slate-700 px-4 text-xs font-bold text-slate-200 hover:bg-slate-800"
+        >
+          ← Back
+        </button>
+        <label className="relative min-h-[44px] w-full flex-1 sm:min-w-[200px]">
+          <span className="sr-only">Search symbol (BTC, AAPL, GOLD…)</span>
+          <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-slate-500" />
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value.toUpperCase())}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && matches.length > 0) {
+                setDraft("");
+                navigate(`/coin/${matches[0].symbol}`);
+              }
+            }}
+            placeholder="Search any market: BTC, AAPL, NVDA, GOLD…"
+            className="h-[44px] w-full rounded-xl border border-slate-800 bg-slate-950 pr-3 pl-9 text-xs font-bold text-slate-100 placeholder:text-slate-600 focus:border-cyan-400/60 focus:outline-none"
+          />
+        </label>
+        {(["ALL", "crypto", "stocks", "commodities"] as const).map((c) => (
+          <button
+            key={c}
+            onClick={() => setCat(c)}
+            aria-pressed={cat === c}
+            className={cn("min-h-[44px] rounded-lg border px-3 text-xs font-bold", cat === c ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" : "border-slate-800 text-slate-500 hover:border-slate-700")}
+          >
+            {c === "ALL" ? "ALL" : c === "crypto" ? "Crypto" : c === "stocks" ? "Stocks" : "Commodities"}
+          </button>
+        ))}
+      </div>
+      {draft.trim() !== "" && (
+        <div className="mt-2">
+          {matches.length === 0 ? (
+            <p className="px-1 py-2 text-xs text-slate-500">No listed market matches “{draft.trim()}”. Try BTC, AAPL, NVDA or GOLD.</p>
+          ) : (
+            <ul className="grid gap-1.5 sm:grid-cols-2">
+              {matches.map((m) => (
+                <li key={m.symbol}>
+                  <button
+                    onClick={() => {
+                      setDraft("");
+                      navigate(`/coin/${m.symbol}`);
+                    }}
+                    className={cn(
+                      "flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs font-bold",
+                      m.symbol === current
+                        ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200"
+                        : "border-slate-800 text-slate-200 hover:border-slate-600",
+                    )}
+                  >
+                    <span className="break-all">{m.symbol}</span>
+                    <span className="shrink-0 font-mono text-[10px] text-slate-500">
+                      {classifyMarket(m.symbol, mainSymbols).toUpperCase()}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-1.5 px-1 text-[11px] text-slate-600">
+            Full market identity is preserved (e.g. xyz:NVDA) — the DEX prefix is never stripped.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Support/resistance from the same swing-clustered levels the engine uses. */
+function SupportResistance({ candles, tf }: { candles: Candle[]; tf: Timeframe }) {
+  const levels = useMemo(() => {
+    if (candles.length < 30) return null;
+    const closes = candles.map((c) => c.close);
+    const atr = lastAtr(candles, 14);
+    const price = closes[closes.length - 1];
+    if (atr === null || !(atr > 0) || !Number.isFinite(price)) return null;
+    try {
+      return buildLevels(detectSwings(candles), price, atr);
+    } catch {
+      return null;
+    }
+  }, [candles]);
+  if (!levels) {
+    return (
+      <Card className="mt-4">
+        <CardHeader title={`Support / Resistance · ${tf}`} subtitle="Swing-clustered zones from live candles" />
+        <p className="px-5 py-6 text-center text-xs text-slate-500">No qualifying zones on this timeframe yet — levels are computed, never invented.</p>
+      </Card>
+    );
+  }
+  const rows: [string, { price: number; touches: number; strength: number } | null][] = [
+    ["Nearest Resistance", levels.nearestResistance],
+    ["Strong Resistance", levels.strongResistance],
+    ["Nearest Support", levels.nearestSupport],
+    ["Strong Support", levels.strongSupport],
+  ];
+  return (
+    <Card className="mt-4">
+      <CardHeader title={`Support / Resistance · ${tf}`} subtitle="Swing-clustered zones — same levels the engine scores" />
+      <div className="grid grid-cols-2 gap-2.5 p-5 lg:grid-cols-4">
+        {rows.map(([label, lv]) => (
+          <div key={label} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+            <p className="text-[11px] font-bold tracking-widest text-slate-500 uppercase">{label}</p>
+            <p className="mt-1 font-mono text-[15px] font-bold text-slate-100">
+              {lv ? lv.price.toLocaleString("en-US", { maximumFractionDigits: 4 }) : "—"}
+            </p>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              {lv ? `${lv.touches} touch${lv.touches === 1 ? "" : "es"} · strength ${(lv.strength * 100).toFixed(0)}%` : "none qualified"}
+            </p>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
@@ -292,6 +456,11 @@ export default function CoinAnalysis() {
   // a lowercase `dex:` prefix (xyz:NVDA) that the candle API requires
   // verbatim. Unlisted symbols fall back to the route form (unchanged).
   const coin = market?.symbol ?? routeCoin;
+  // Remember the last-viewed symbol so sidebar navigation can return here
+  // instead of forcing a hardcoded default.
+  useEffect(() => {
+    saveLastCoin(coin);
+  }, [coin]);
   const { data: mtf, loading: candlesLoading, error: candlesError } = useMtfCandles(coin);
   const signal = useSignal(coin, mtf, "15m");
 
@@ -394,6 +563,8 @@ export default function CoinAnalysis() {
           </button>
         </div>
       )}
+
+      <SymbolSearch current={coin} />
 
       <div className="mb-4 flex flex-wrap gap-2">
         {watchlist.map((c) => (
@@ -537,11 +708,14 @@ export default function CoinAnalysis() {
         )}
       </Card>
 
+      {/* Support/resistance zones (computed from live candles, never invented) */}
+      <SupportResistance candles={chartCandles} tf={tf} />
+
       {/* Signal readout */}
       <Card className="mt-4">
         <CardHeader
           title="Signal · 15m setup"
-          subtitle="Deterministic scoring — Signal Strength 0–100, never a probability"
+          subtitle="Deterministic scoring — Signal Strength 0–100, never a probability. Signal timeframe is fixed at 15m; chart timeframe buttons above change only the chart and indicators."
           right={
             signal && !showStaleSignal ? (
               <DirectionBadge direction={signal.direction} />
@@ -688,8 +862,8 @@ export default function CoinAnalysis() {
           }
         />
         <div className="px-5 py-4 text-xs leading-relaxed text-slate-500">
-          Signal logging and backtesting arrive in later phases. The deterministic signal above
-          is computed fresh from live candles on every visit — nothing is stored yet.
+          Every NEW setup is journaled with lifecycle status and observed level touches. Open history for
+          this coin's full record, or the cloud history for signals generated while this browser was closed.
         </div>
       </Card>
     </div>

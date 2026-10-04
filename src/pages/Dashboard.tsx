@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Bitcoin } from "lucide-react";
 import {
@@ -14,6 +14,11 @@ import { ConnectionBadge } from "../components/ConnectionBadge";
 import { timeAgo } from "../components/NewsList";
 import { useMarkets } from "../market/store";
 import { useScan } from "../scanner";
+import { useAuth } from "../supabase/auth";
+import { useServerHistory } from "../supabase/history";
+import { useTelegramConnection } from "../supabase/telegram";
+import { getSharedPaperEngine, unrealizedFor, type PaperSnapshot } from "../paper";
+import { loadAlertSettings } from "../alerts";
 import { isListableBounce } from "../analysis/signal";
 import { loadJournal } from "../signals/journal";
 import {
@@ -189,29 +194,149 @@ function HighlightCard({
 
 function RecentSignalsList() {
   const { markets } = useMarkets();
+  const { user } = useAuth();
   const mainSymbols = useMemo(
     () => new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase())),
     [markets],
   );
-  const entries = loadJournal()
-    .sort((a, b) => b.lastSeen - a.lastSeen)
-    .slice(0, 8);
+  // Signed in: authoritative cloud history (includes signals generated
+  // while this browser was closed). Signed out: this-device journal only,
+  // explicitly labeled — the two sources are never silently mixed.
+  const server = useServerHistory("server", "ALL", !!user);
+  const source: "server" | "local" = user ? "server" : "local";
+  const entries = useMemo(() => {
+    if (source === "server") return server.entries.slice(0, 8);
+    return loadJournal()
+      .sort((a, b) => b.lastSeen - a.lastSeen)
+      .slice(0, 8);
+  }, [source, server.entries]);
+  if (source === "server" && server.loading) {
+    return <p className="px-5 py-8 text-center text-sm text-slate-500">Loading cloud signals…</p>;
+  }
+  if (source === "server" && server.error) {
+    return (
+      <div className="px-5 py-8 text-center">
+        <p className="text-sm font-semibold text-rose-300">Unable to load cloud signals.</p>
+        <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">{server.error}</p>
+        <button onClick={server.refresh} className="mt-3 min-h-[44px] rounded-xl border border-slate-700 px-5 text-xs font-bold text-slate-200 hover:bg-slate-800">
+          Retry
+        </button>
+      </div>
+    );
+  }
   if (entries.length === 0) {
-    return <p className="px-5 py-8 text-center text-sm text-slate-500">No journaled signals yet — run a scan.</p>;
+    return (
+      <p className="px-5 py-8 text-center text-sm text-slate-500">
+        {source === "server"
+          ? "No cloud signals in the last scan window yet — the 24/7 cron records here even while this browser is closed."
+          : "No device signals yet — run a scan, or sign in to view cloud signal history."}
+      </p>
+    );
   }
   return (
-    <ul className="divide-y divide-slate-800/60">
-      {entries.map((e) => (
-        <li key={e.id} className="flex min-w-0 flex-wrap items-center gap-2 px-5 py-2 text-xs">
-          <CategoryChip symbol={e.symbol} mainSymbols={mainSymbols} />
-          <Link to={`/coin/${e.symbol}`} className="font-bold break-words text-white hover:text-cyan-300">{e.symbol}</Link>
-          <span className={cn("font-bold", e.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>{e.direction}</span>
-          <span className="font-mono text-slate-400">{e.strength}</span>
-          <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">{e.status}</span>
-          <span className="ml-auto text-slate-600">{timeAgo(e.lastSeen)}</span>
-        </li>
-      ))}
-    </ul>
+    <>
+      <p className="px-5 pt-3 text-[11px] font-bold tracking-widest text-slate-500 uppercase">
+        {source === "server" ? "Latest Server Signals · Cloud" : "Device Signals · this browser only"}
+      </p>
+      <ul className="divide-y divide-slate-800/60">
+        {entries.map((e) => (
+          <li key={e.id} className="flex min-w-0 flex-wrap items-center gap-2 px-5 py-2 text-xs">
+            <CategoryChip symbol={e.symbol} mainSymbols={mainSymbols} />
+            <Link to={`/coin/${e.symbol}`} className="font-bold break-words text-white hover:text-cyan-300">{e.symbol}</Link>
+            <span className={cn("font-bold", e.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>{e.direction}</span>
+            <span className="font-mono text-slate-400">{e.strength}</span>
+            <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">{e.status}</span>
+            <span className="ml-auto text-slate-600">{timeAgo(e.lastSeen)}</span>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/** Compact paper-performance teaser: live engine values, never invented. */
+function PaperTeaser() {
+  const engine = useMemo(() => getSharedPaperEngine(), []);
+  const [snap, setSnap] = useState<PaperSnapshot>(() => engine.getSnapshot());
+  const { markets } = useMarkets();
+  useEffect(() => engine.subscribe(setSnap), [engine]);
+  const marks = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const mk of markets) if (mk.markPrice !== null) m.set(mk.symbol, mk.markPrice);
+    return m;
+  }, [markets]);
+  const open = snap.positions.filter((p) => p.closedAt === null);
+  const unreal = open.reduce((a, p) => a + unrealizedFor(p, marks.get(p.symbol) ?? NaN), 0);
+  const equity = snap.balance + unreal;
+  const winRate = snap.closedCount > 0 ? (snap.wins / snap.closedCount) * 100 : 0;
+  return (
+    <Card>
+      <CardHeader
+        title="Paper Performance"
+        subtitle="Simulated account · live marks"
+        right={
+          <Link to="/paper" className="text-xs font-semibold text-cyan-300 hover:underline">
+            Open →
+          </Link>
+        }
+      />
+      <div className="grid grid-cols-2 gap-2.5 p-4">
+        {[
+          ["Equity", `$${equity.toFixed(2)}`],
+          ["Cash", `$${snap.balance.toFixed(2)}`],
+          ["Realized P&L", `${snap.realizedPnl >= 0 ? "+" : ""}$${snap.realizedPnl.toFixed(2)}`],
+          ["Win Rate", `${winRate.toFixed(1)}% (${snap.wins}/${snap.closedCount})`],
+          ["Open Positions", String(open.length)],
+          ["Unrealized P&L", `${unreal >= 0 ? "+" : ""}$${unreal.toFixed(2)}`],
+        ].map(([k, v]) => (
+          <div key={k} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+            <p className="text-[10px] font-bold tracking-widest text-slate-500 uppercase">{k}</p>
+            <p className="mt-1 font-mono text-sm font-bold text-slate-100">{v}</p>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/** Compact Telegram status: connection + enabled categories, read-only. */
+function TelegramTeaser() {
+  const { state } = useTelegramConnection();
+  const cats = loadAlertSettings().categories;
+  const enabled = (["crypto", "stocks", "commodities"] as const).filter((c) => cats[c]);
+  const connected = state.phase === "ready" && state.status.connected;
+  return (
+    <Card>
+      <CardHeader
+        title="Telegram"
+        subtitle="Push delivery status"
+        right={
+          <Link to="/settings" className="text-xs font-semibold text-cyan-300 hover:underline">
+            Setup →
+          </Link>
+        }
+      />
+      <div className="space-y-2 p-4 text-xs">
+        <p className="flex items-center gap-2">
+          <span aria-hidden="true">{state.phase === "loading" ? "🟡" : connected ? "🟢" : "⚪"}</span>
+          <span className="font-bold text-slate-200">
+            {state.phase === "loading"
+              ? "Checking…"
+              : state.phase === "signed-out"
+                ? "Sign in to connect Telegram"
+                : connected
+                  ? `Connected${state.status.username ? ` @${state.status.username}` : ""}`
+                  : state.phase === "error"
+                    ? "Status unavailable"
+                    : "Not connected"}
+          </span>
+        </p>
+        <p className="text-slate-400">
+          Categories: {enabled.length > 0 ? enabled.join(" · ") : "none enabled"}
+        </p>
+        <p className="text-slate-600">Pairing, test delivery and filters live in Settings → Telegram.</p>
+      </div>
+    </Card>
   );
 }
 
@@ -344,6 +469,12 @@ export default function Dashboard() {
       {/* 24/7 CRON HEALTH — reads the same scanner_state the bot reads */}
       <ScannerHealthPanel />
 
+      {/* PAPER + TELEGRAM teasers — live values only, never invented */}
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <PaperTeaser />
+        <TelegramTeaser />
+      </div>
+
       {/* Market snapshot + signals note */}
       <div className="mt-5 grid gap-4 lg:grid-cols-5">
         <Card className="lg:col-span-2">
@@ -378,7 +509,7 @@ export default function Dashboard() {
         <Card className="lg:col-span-3">
           <CardHeader
             title="Recent Signals"
-            subtitle="Latest journaled setups with lifecycle status"
+            subtitle="Cloud history when signed in · device journal otherwise"
             right={
               <Link to="/history" className="text-xs font-semibold text-cyan-300 hover:underline">
                 Full history →

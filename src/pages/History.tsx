@@ -4,20 +4,28 @@ import { Search } from "lucide-react";
 import { Card, CardHeader, PageHeader } from "../components/ui";
 import { CategoryChip, FilterGroup } from "../components/SignalCard";
 import { ConnectionBadge } from "../components/ConnectionBadge";
+import { useAuth } from "../supabase/auth";
 import { useMarkets } from "../market/store";
 import { classifyMarket, type MarketCategory } from "../market/classify";
 import { useServerHistory, type HistorySource } from "../supabase/history";
 
 const HISTORY_SOURCE_KEY = "cryptoin:history-source:v1";
 
-function loadHistorySource(): HistorySource {
+function loadStoredHistorySource(): HistorySource | null {
   try {
-    return typeof localStorage !== "undefined" && localStorage.getItem(HISTORY_SOURCE_KEY) === "server"
-      ? "server"
-      : "local";
+    const v = typeof localStorage !== "undefined" ? localStorage.getItem(HISTORY_SOURCE_KEY) : null;
+    return v === "server" || v === "local" ? v : null;
   } catch {
-    return "local";
+    return null;
   }
+}
+
+/**
+ * History source default: an explicit stored choice always wins;
+ * otherwise signed-in users start on Cloud, signed-out on device.
+ */
+export function defaultHistorySource(stored: HistorySource | null, signedIn: boolean): HistorySource {
+  return stored ?? (signedIn ? "server" : "local");
 }
 import {
   clearJournal,
@@ -106,9 +114,13 @@ export default function History() {
   // Source toggle: device journal (live local analysis) vs authoritative
   // server history (includes signals generated while this browser was
   // closed). Never blended — the active source is always labeled.
-  const [source, setSourceState] = useState<HistorySource>(() => loadHistorySource());
+  // Default follows auth (signed in → Cloud, signed out → device) until
+  // the user makes an explicit choice, which is then persisted verbatim.
+  const { user } = useAuth();
+  const [explicitSource, setExplicitSource] = useState<HistorySource | null>(() => loadStoredHistorySource());
+  const source: HistorySource = defaultHistorySource(explicitSource, !!user);
   const setSource = (s: HistorySource) => {
-    setSourceState(s);
+    setExplicitSource(s);
     setPage(0);
     try {
       localStorage?.setItem(HISTORY_SOURCE_KEY, s);

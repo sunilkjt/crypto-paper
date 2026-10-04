@@ -20,3 +20,12 @@ export function isExpired(args: {
   if (args.strength < EXPIRED_BELOW_STRENGTH) return true;
   return false;
 }
+
+/**
+ * Alert age check for the Alert Center's Current/Stale distinction.
+ * Pure timestamp comparison — old alerts are labeled, never deleted.
+ */
+export function isStaleTimestamp(ts: number, now = Date.now(), maxAgeMs = DEFAULT_MAX_SIGNAL_AGE_MS): boolean {
+  if (!Number.isFinite(ts) || ts <= 0) return true;
+  return now - ts > maxAgeMs;
+}

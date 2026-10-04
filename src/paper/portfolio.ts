@@ -1,4 +1,5 @@
 import type { PaperConfig, PaperPosition, PaperSnapshot } from "./types";
+import { maxNotionalOf, MIN_STOP_DISTANCE_PCT } from "./types";
 
 /**
  * Pure paper-portfolio math. Positions progress OPEN → TP1/2/3 HIT on
@@ -29,12 +30,75 @@ export interface OpenPaperArgs {
   at?: number;
 }
 
-export function openPaperPosition(args: OpenPaperArgs): PaperPosition | null {
+export type PaperOpenErrorCode =
+  | "INVALID_PRICE"
+  | "INVALID_STOP_SIDE"
+  | "STOP_TOO_CLOSE"
+  | "INVALID_RISK"
+  | "INSUFFICIENT_BALANCE"
+  | "INVALID_SIZE"
+  | "NOTIONAL_EXCEEDS_MAX";
+
+export interface PaperOpenValidation {
+  ok: boolean;
+  code: PaperOpenErrorCode | null;
+  message: string | null;
+  stopDist: number;
+  risk: number;
+  size: number;
+  notional: number;
+}
+
+const OPEN_ERRORS: Record<PaperOpenErrorCode, string> = {
+  INVALID_PRICE: "Entry price is invalid.",
+  INVALID_STOP_SIDE: "Stop loss is on the wrong side of entry for this direction.",
+  STOP_TOO_CLOSE: "Stop loss is too close to entry.",
+  INVALID_RISK: "Risk configuration is invalid.",
+  INSUFFICIENT_BALANCE: "Insufficient available balance.",
+  INVALID_SIZE: "Calculated position size is invalid.",
+  NOTIONAL_EXCEEDS_MAX: "Position size exceeds the maximum allowed notional.",
+};
+
+/**
+ * Defensive validation for simulated opens. Pure: never opens, never
+ * throws. Every user-actionable failure carries a truthful message so
+ * callers never report "already open" for a sizing/validation failure.
+ */
+export function validatePaperOpen(args: OpenPaperArgs): PaperOpenValidation {
+  const fail = (code: PaperOpenErrorCode, stopDist = 0, risk = 0, size = 0, notional = 0): PaperOpenValidation => ({
+    ok: false,
+    code,
+    message: OPEN_ERRORS[code],
+    stopDist,
+    risk,
+    size,
+    notional,
+  });
+  if (!Number.isFinite(args.entry) || args.entry <= 0) return fail("INVALID_PRICE");
+  if (!Number.isFinite(args.invalidation) || args.invalidation <= 0) return fail("INVALID_PRICE");
   const stopDist =
     args.direction === "LONG" ? args.entry - args.invalidation : args.invalidation - args.entry;
-  if (!(stopDist > 0) || !(args.equity > 0) || !(args.entry > 0)) return null;
-  const risk = args.equity * args.config.riskPerTrade;
+  if (!(stopDist > 0) || !Number.isFinite(stopDist)) return fail("INVALID_STOP_SIDE");
+  if (stopDist / args.entry < MIN_STOP_DISTANCE_PCT) return fail("STOP_TOO_CLOSE", stopDist);
+  if (!Number.isFinite(args.equity) || args.equity <= 0) return fail("INSUFFICIENT_BALANCE", stopDist);
+  const riskPct = args.config.riskPerTrade;
+  if (!Number.isFinite(riskPct) || riskPct <= 0 || riskPct > 1) return fail("INVALID_RISK", stopDist);
+  const risk = args.equity * riskPct;
+  if (!Number.isFinite(risk) || risk <= 0) return fail("INVALID_RISK", stopDist);
   const size = risk / stopDist;
+  if (!Number.isFinite(size) || size <= 0) return fail("INVALID_SIZE", stopDist, risk);
+  const notional = size * args.entry;
+  if (!Number.isFinite(notional) || notional <= 0) return fail("INVALID_SIZE", stopDist, risk, size);
+  const maxNotional = args.equity * maxNotionalOf(args.config);
+  if (notional > maxNotional) return fail("NOTIONAL_EXCEEDS_MAX", stopDist, risk, size, notional);
+  return { ok: true, code: null, message: null, stopDist, risk, size, notional };
+}
+
+export function openPaperPosition(args: OpenPaperArgs): PaperPosition | null {
+  const checked = validatePaperOpen(args);
+  if (!checked.ok) return null;
+  const risk = args.equity * args.config.riskPerTrade;
+  const size = risk / checked.stopDist;
   const notional = size * args.entry;
   return {
     id: paperId(args.symbol),

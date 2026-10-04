@@ -1,5 +1,5 @@
 import { Suspense, lazy } from "react";
-import { Route, Routes, Navigate } from "react-router-dom";
+import { Link, Route, Routes, Navigate } from "react-router-dom";
 import AppLayout from "./components/layout/AppLayout";
 import Dashboard from "./pages/Dashboard";
 import Scanner from "./pages/Scanner";
@@ -13,6 +13,7 @@ import Alerts from "./pages/Alerts";
 import Watchlist from "./pages/Watchlist";
 import History from "./pages/History";
 import Backtest from "./pages/Backtest";
+import Performance from "./pages/Performance";
 import PaperTrading from "./pages/PaperTrading";
 import Settings from "./pages/Settings";
 
@@ -24,9 +25,9 @@ function NotFound() {
       <p className="mt-1 text-sm text-slate-400">
         This route is not part of the Phase 1 foundation.
       </p>
-      <a href="/" className="mt-4 rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-cyan-400">
+      <Link to="/" className="mt-4 rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-cyan-400">
         Back to Dashboard
-      </a>
+      </Link>
     </div>
   );
 }
@@ -58,6 +59,7 @@ export default function App() {
         <Route path="watchlist" element={<Watchlist />} />
         <Route path="history" element={<History />} />
         <Route path="backtest" element={<Backtest />} />
+        <Route path="performance" element={<Performance />} />
         <Route path="paper" element={<PaperTrading />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<NotFound />} />

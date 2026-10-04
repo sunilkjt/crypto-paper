@@ -47,7 +47,7 @@ export {
   type AlertFilters,
 } from "./store";
 export { checkTargets, type TargetLevel } from "./targets";
-export { isExpired, DEFAULT_MAX_SIGNAL_AGE_MS, EXPIRED_BELOW_STRENGTH } from "./expiry";
+export { isExpired, isStaleTimestamp, DEFAULT_MAX_SIGNAL_AGE_MS, EXPIRED_BELOW_STRENGTH } from "./expiry";
 export {
   alertCoinNavigation,
   isNavigableAlert,

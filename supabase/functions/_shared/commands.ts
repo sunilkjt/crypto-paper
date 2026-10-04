@@ -34,10 +34,14 @@ export type BotCommand =
   | { cmd: "today" }
   | { cmd: "last"; symbol?: string }
   | { cmd: "history"; limit: number }
+  | { cmd: "scan"; args: string }
+  | { cmd: "performance"; category?: "crypto" | "stocks" | "commodities" }
   | { cmd: "unknown" };
 
 export const UNPAIRED_MESSAGE =
   "🔒 Telegram is not connected to a CryptoIn account.\n\nOpen CryptoIn and connect Telegram first.";
+export const SCAN_ACK_MESSAGE =
+  "🔎 Scanning Hyperliquid markets...\n\nCrypto + Stocks + Commodities\nPlease wait...";
 export const DB_ERROR_MESSAGE =
   "⚠️ I couldn't retrieve the signal history right now.\n\nPlease try again shortly.";
 export const EMPTY_MESSAGE = "No qualifying signals found yet.";
@@ -101,6 +105,15 @@ export function parseCommand(text: string): BotCommand {
       return { cmd: "last", symbol: arg === "" ? undefined : arg.toUpperCase() };
     case "history":
       return { cmd: "history", limit: clampHistoryLimit(Number.parseInt(arg, 10)) };
+    case "scan":
+      // Args pass through opaquely; the scan endpoint parses category /
+      // direction / trade / limit (case-insensitive, combined).
+      return { cmd: "scan", args: arg };
+    case "performance": {
+      const c = arg.toLowerCase();
+      if (c === "crypto" || c === "stocks" || c === "commodities") return { cmd: "performance", category: c };
+      return { cmd: "performance" };
+    }
     default:
       return { cmd: "unknown" };
   }
@@ -134,6 +147,17 @@ export function routeNatural(text: string): string | null {
     if (token === "COMMODITY" || token === "COMMODITIES") return "/signals commodities";
     if (token === "CRYPTO") return "/signals crypto";
     return `/last ${token}`;
+  }
+  const scanMatch = /(?:^|\s)scan(?:\s+(.*))?$/.exec(t);
+  if (scanMatch) {
+    const after = (scanMatch[1] ?? "").trim().replace(/[?.!]+$/, "");
+    return after === "" ? "/scan" : `/scan ${after}`;
+  }
+  if (t.includes("performance") || t.includes("win rate") || t.includes("profit factor")) {
+    if (t.includes("stock")) return "/performance stocks";
+    if (t.includes("commod")) return "/performance commodities";
+    if (t.includes("crypto")) return "/performance crypto";
+    return "/performance";
   }
   if (t.includes("previous") || (t.includes("recent") && t.includes("signal"))) return "/signals";
   if (t.includes("stock")) return "/signals stocks";
@@ -170,6 +194,30 @@ export function formatHelp(): string {
     "/last — Last signal",
     "/last BTC — Last signal for a symbol",
     "/history — Recent signal history",
+    "",
+    "🔎 MARKET SCAN",
+    "",
+    "/scan — Fresh scan of all markets",
+    "/scan crypto — Crypto only",
+    "/scan stocks — Stocks only",
+    "/scan commodities — Commodities only",
+    "/scan long — LONG setups",
+    "/scan short — SHORT setups",
+    "/scan trade — Qualified trades only",
+    "/scan 10 — Top 10 setups",
+    "",
+    "Examples:",
+    "/scan stocks long",
+    "/scan crypto 5",
+    "/scan trade 10",
+    "",
+    "📊 PERFORMANCE",
+    "",
+    "/performance — Signal performance",
+    "/performance crypto — Crypto performance",
+    "/performance stocks — Stock performance",
+    "/performance commodities — Commodity performance",
+    "",
     "/help — Show this help",
     "",
     "Read-only: I explain signals, I never trade.",
@@ -253,6 +301,8 @@ export interface Heartbeat {
   todayCounts?: { crypto: number; stocks: number; commodities: number };
   /** Watchdog alert state: true = alerting, false = armed, null = unknown. */
   watchdogAlerting?: boolean | null;
+  /** Outcome-resolver heartbeat (written by the resolve job, null = never reported). */
+  resolver?: { at: number; checked: number; resolved: number } | null;
 }
 
 /** ONLINE only from a fresh heartbeat — never from mere DB existence. */
@@ -292,11 +342,143 @@ export function formatStatus(h: Heartbeat): string {
   lines.push("");
   lines.push(`Telegram: CONNECTED${h.pairingUsername ? ` @${h.pairingUsername}` : ""}`);
   lines.push(`Watchdog: ${wd}`);
+  lines.push(`Manual scan: AVAILABLE`);
+  lines.push(
+    h.resolver && typeof h.resolver.at === "number"
+      ? `Resolver: ${fmtTime(new Date(h.resolver.at).toISOString())} (${h.resolver.resolved} resolved / ${h.resolver.checked} checked)`
+      : `Resolver: never reported`,
+  );
   return lines.join("\n");
 }
 
-/** Split long replies on line boundaries (Telegram-safe chunks). */
-export function splitMessage(text: string, max = 3500): string[] {
+/** Minimal resolved-signal shape for performance summaries (precomputed outcome + R). */
+export interface PerfRow {
+  category: "crypto" | "stocks" | "commodities";
+  symbol: string;
+  direction: "LONG" | "SHORT";
+  score: number;
+  outcome: string;
+  realized_r: number | null;
+  last_seen: string;
+}
+
+function perfR(v: number): string {
+  return `${v >= 0 ? "+" : ""}${Math.round(v * 100) / 100}R`;
+}
+
+function perfBand(score: number): string {
+  if (score >= 90) return "90–100";
+  if (score >= 80) return "80–89";
+  if (score >= 70) return "70–79";
+  if (score >= 60) return "60–69";
+  return "<60";
+}
+
+/** "12m" / "4h 32m" / "2d 3h" (empty/Invalid safe). */
+export function fmtAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const m = Math.floor(ms / 60_000);
+  if (m < 1) return "<1m";
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+export interface PerformanceMeta {
+  /** Total resolved+unresolved signals in scope (0 = nothing recorded). */
+  totalSignals: number;
+  /** Unresolved (OPEN or not yet processed) signals in scope. */
+  openCount: number;
+  /** Oldest unresolved signal timestamp (ms, null when none open). */
+  oldestOpenAt: number | null;
+  /** Now (ms) for age computation. */
+  now: number;
+}
+
+/**
+ * Compact performance summary over resolved rows. Three honest states:
+ * nothing recorded → zero-signals message; signals but none completed →
+ * open counts + oldest age; completed → full stats. Completed =
+ * WIN/LOSS/BREAKEVEN only; OPEN/EXPIRED/UNKNOWN never enter rates.
+ */
+export function formatPerformance(
+  rows: PerfRow[],
+  category?: "crypto" | "stocks" | "commodities",
+  meta?: PerformanceMeta,
+): string {
+  const scope = category ? rows.filter((r) => r.category === category) : rows;
+  const done = scope.filter((r) => r.outcome === "WIN" || r.outcome === "LOSS" || r.outcome === "BREAKEVEN");
+  const title = category
+    ? `📊 SIGNAL PERFORMANCE — ${category === "crypto" ? "CRYPTO" : category === "stocks" ? "STOCKS" : "COMMODITIES"}`
+    : "📊 SIGNAL PERFORMANCE";
+  if (done.length === 0) {
+    if (meta && meta.totalSignals === 0) {
+      return [title, "", "No signals recorded yet."].join("\n");
+    }
+    const openLine =
+      meta && meta.openCount > 0
+        ? [
+            "",
+            `Open signals: ${meta.openCount}`,
+            ...(meta.oldestOpenAt !== null
+              ? [`Oldest open signal: ${fmtAge(meta.now - meta.oldestOpenAt)}`]
+              : []),
+          ]
+        : [];
+    return [title, "", "No completed signals yet.", ...openLine, "", "Performance will appear when signals resolve."].join("\n");
+  }
+  const wins = done.filter((r) => r.outcome === "WIN").length;
+  const rs = done.map((r) => (typeof r.realized_r === "number" && Number.isFinite(r.realized_r) ? r.realized_r : 0));
+  const grossPos = rs.filter((x) => x > 0).reduce((a, b) => a + b, 0);
+  const grossNeg = Math.abs(rs.filter((x) => x <= 0).reduce((a, b) => a + b, 0));
+  const avg = rs.reduce((a, b) => a + b, 0) / rs.length;
+  const lines = [
+    title,
+    "",
+    `Signals: ${done.length}`,
+    `Win rate: ${Math.round((wins / done.length) * 1000) / 10}%`,
+    `Average R: ${perfR(avg)}`,
+    `Profit factor: ${grossNeg > 0 ? Math.round((grossPos / grossNeg) * 100) / 100 : grossPos > 0 ? "∞" : 0}`,
+    `Expectancy: ${perfR(avg)}`,
+    "",
+  ];
+  if (!category) {
+    const catR = (c: PerfRow["category"]) =>
+      done.filter((r) => r.category === c).reduce((a, r) => a + (typeof r.realized_r === "number" ? r.realized_r : 0), 0);
+    lines.push(
+      `Crypto: ${perfR(catR("crypto"))}`,
+      `Stocks: ${perfR(catR("stocks"))}`,
+      `Commodities: ${perfR(catR("commodities"))}`,
+      "",
+    );
+  }
+  const bands = ["90–100", "80–89", "70–79", "60–69", "<60"];
+  const bandRows = bands
+    .map((b) => ({ band: b, rs: done.filter((r) => perfBand(r.score) === b).map((r) => (typeof r.realized_r === "number" ? r.realized_r : 0)) }))
+    .filter((b) => b.rs.length > 0);
+  if (bandRows.length > 0) {
+    const best = bandRows
+      .map((b) => ({ band: b.band, avg: b.rs.reduce((a, x) => a + x, 0) / b.rs.length }))
+      .sort((a, b) => b.avg - a.avg)[0];
+    lines.push("Best score range:", `${best.band} → ${perfR(best.avg)}`, "");
+  }
+  const recent = [...done]
+    .sort((a, b) => Date.parse(b.last_seen) - Date.parse(a.last_seen))
+    .slice(0, 3);
+  if (recent.length > 0) {
+    lines.push("Recent:");
+    for (const r of recent) {
+      lines.push(`${r.symbol} ${r.direction} → ${perfR(typeof r.realized_r === "number" ? r.realized_r : 0)}`);
+    }
+  }
+  if (done.length < 30) {
+    lines.push("", `⚠️ Small sample (${done.length} completed) — treat as preliminary.`);
+  }
+  return lines.join("\n");
+}
+
+/** Split long replies on line boundaries (Telegram-safe chunks). */export function splitMessage(text: string, max = 3500): string[] {
   if (text.length <= max) return [text];
   const lines = text.split("\n");
   const chunks: string[] = [];

@@ -5,8 +5,11 @@
 //
 // PUSH (existing): /start <one-time-token> links the chat; /stop pauses.
 // PULL (this feature): paired chats may query /help /status /signals
-// /today /last /history — pure Supabase reads + formatting. NEVER scans,
-// NEVER calls Hyperliquid, NEVER calls Groq/AI, NEVER trades.
+// /today /last /history — pure Supabase reads + formatting. /scan
+// acknowledges immediately and hands off to the telegram-scan function
+// (same deterministic engine, read-only: no history writes, no cooldown
+// gate). The webhook itself NEVER scans, NEVER calls Hyperliquid
+// directly, NEVER calls Groq/AI, NEVER trades.
 //
 // Security: unknown/expired tokens are ignored with HTTP 200 (no oracle);
 // unpaired chats get the access message; DB errors map to a generic
@@ -53,10 +56,14 @@ export type BotCommand =
   | { cmd: "today" }
   | { cmd: "last"; symbol?: string }
   | { cmd: "history"; limit: number }
+  | { cmd: "scan"; args: string }
+  | { cmd: "performance"; category?: "crypto" | "stocks" | "commodities" }
   | { cmd: "unknown" };
 
 export const UNPAIRED_MESSAGE =
   "🔒 Telegram is not connected to a CryptoIn account.\n\nOpen CryptoIn and connect Telegram first.";
+export const SCAN_ACK_MESSAGE =
+  "🔎 Scanning Hyperliquid markets...\n\nCrypto + Stocks + Commodities\nPlease wait...";
 export const DB_ERROR_MESSAGE =
   "⚠️ I couldn't retrieve the signal history right now.\n\nPlease try again shortly.";
 export const EMPTY_MESSAGE = "No qualifying signals found yet.";
@@ -120,6 +127,15 @@ export function parseCommand(text: string): BotCommand {
       return { cmd: "last", symbol: arg === "" ? undefined : arg.toUpperCase() };
     case "history":
       return { cmd: "history", limit: clampHistoryLimit(Number.parseInt(arg, 10)) };
+    case "scan":
+      // Args pass through opaquely; the scan endpoint parses category /
+      // direction / trade / limit (case-insensitive, combined).
+      return { cmd: "scan", args: arg };
+    case "performance": {
+      const c = arg.toLowerCase();
+      if (c === "crypto" || c === "stocks" || c === "commodities") return { cmd: "performance", category: c };
+      return { cmd: "performance" };
+    }
     default:
       return { cmd: "unknown" };
   }
@@ -153,6 +169,17 @@ export function routeNatural(text: string): string | null {
     if (token === "COMMODITY" || token === "COMMODITIES") return "/signals commodities";
     if (token === "CRYPTO") return "/signals crypto";
     return `/last ${token}`;
+  }
+  const scanMatch = /(?:^|\s)scan(?:\s+(.*))?$/.exec(t);
+  if (scanMatch) {
+    const after = (scanMatch[1] ?? "").trim().replace(/[?.!]+$/, "");
+    return after === "" ? "/scan" : `/scan ${after}`;
+  }
+  if (t.includes("performance") || t.includes("win rate") || t.includes("profit factor")) {
+    if (t.includes("stock")) return "/performance stocks";
+    if (t.includes("commod")) return "/performance commodities";
+    if (t.includes("crypto")) return "/performance crypto";
+    return "/performance";
   }
   if (t.includes("previous") || (t.includes("recent") && t.includes("signal"))) return "/signals";
   if (t.includes("stock")) return "/signals stocks";
@@ -189,6 +216,30 @@ export function formatHelp(): string {
     "/last — Last signal",
     "/last BTC — Last signal for a symbol",
     "/history — Recent signal history",
+    "",
+    "🔎 MARKET SCAN",
+    "",
+    "/scan — Fresh scan of all markets",
+    "/scan crypto — Crypto only",
+    "/scan stocks — Stocks only",
+    "/scan commodities — Commodities only",
+    "/scan long — LONG setups",
+    "/scan short — SHORT setups",
+    "/scan trade — Qualified trades only",
+    "/scan 10 — Top 10 setups",
+    "",
+    "Examples:",
+    "/scan stocks long",
+    "/scan crypto 5",
+    "/scan trade 10",
+    "",
+    "📊 PERFORMANCE",
+    "",
+    "/performance — Signal performance",
+    "/performance crypto — Crypto performance",
+    "/performance stocks — Stock performance",
+    "/performance commodities — Commodity performance",
+    "",
     "/help — Show this help",
     "",
     "Read-only: I explain signals, I never trade.",
@@ -272,6 +323,8 @@ export interface Heartbeat {
   todayCounts?: { crypto: number; stocks: number; commodities: number };
   /** Watchdog alert state: true = alerting, false = armed, null = unknown. */
   watchdogAlerting?: boolean | null;
+  /** Outcome-resolver heartbeat (written by the resolve job, null = never reported). */
+  resolver?: { at: number; checked: number; resolved: number } | null;
 }
 
 /** ONLINE only from a fresh heartbeat — never from mere DB existence. */
@@ -311,11 +364,143 @@ export function formatStatus(h: Heartbeat): string {
   lines.push("");
   lines.push(`Telegram: CONNECTED${h.pairingUsername ? ` @${h.pairingUsername}` : ""}`);
   lines.push(`Watchdog: ${wd}`);
+  lines.push(`Manual scan: AVAILABLE`);
+  lines.push(
+    h.resolver && typeof h.resolver.at === "number"
+      ? `Resolver: ${fmtTime(new Date(h.resolver.at).toISOString())} (${h.resolver.resolved} resolved / ${h.resolver.checked} checked)`
+      : `Resolver: never reported`,
+  );
   return lines.join("\n");
 }
 
-/** Split long replies on line boundaries (Telegram-safe chunks). */
-export function splitMessage(text: string, max = 3500): string[] {
+/** Minimal resolved-signal shape for performance summaries (precomputed outcome + R). */
+export interface PerfRow {
+  category: "crypto" | "stocks" | "commodities";
+  symbol: string;
+  direction: "LONG" | "SHORT";
+  score: number;
+  outcome: string;
+  realized_r: number | null;
+  last_seen: string;
+}
+
+function perfR(v: number): string {
+  return `${v >= 0 ? "+" : ""}${Math.round(v * 100) / 100}R`;
+}
+
+function perfBand(score: number): string {
+  if (score >= 90) return "90–100";
+  if (score >= 80) return "80–89";
+  if (score >= 70) return "70–79";
+  if (score >= 60) return "60–69";
+  return "<60";
+}
+
+/** "12m" / "4h 32m" / "2d 3h" (empty/Invalid safe). */
+export function fmtAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const m = Math.floor(ms / 60_000);
+  if (m < 1) return "<1m";
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+export interface PerformanceMeta {
+  /** Total resolved+unresolved signals in scope (0 = nothing recorded). */
+  totalSignals: number;
+  /** Unresolved (OPEN or not yet processed) signals in scope. */
+  openCount: number;
+  /** Oldest unresolved signal timestamp (ms, null when none open). */
+  oldestOpenAt: number | null;
+  /** Now (ms) for age computation. */
+  now: number;
+}
+
+/**
+ * Compact performance summary over resolved rows. Three honest states:
+ * nothing recorded → zero-signals message; signals but none completed →
+ * open counts + oldest age; completed → full stats. Completed =
+ * WIN/LOSS/BREAKEVEN only; OPEN/EXPIRED/UNKNOWN never enter rates.
+ */
+export function formatPerformance(
+  rows: PerfRow[],
+  category?: "crypto" | "stocks" | "commodities",
+  meta?: PerformanceMeta,
+): string {
+  const scope = category ? rows.filter((r) => r.category === category) : rows;
+  const done = scope.filter((r) => r.outcome === "WIN" || r.outcome === "LOSS" || r.outcome === "BREAKEVEN");
+  const title = category
+    ? `📊 SIGNAL PERFORMANCE — ${category === "crypto" ? "CRYPTO" : category === "stocks" ? "STOCKS" : "COMMODITIES"}`
+    : "📊 SIGNAL PERFORMANCE";
+  if (done.length === 0) {
+    if (meta && meta.totalSignals === 0) {
+      return [title, "", "No signals recorded yet."].join("\n");
+    }
+    const openLine =
+      meta && meta.openCount > 0
+        ? [
+            "",
+            `Open signals: ${meta.openCount}`,
+            ...(meta.oldestOpenAt !== null
+              ? [`Oldest open signal: ${fmtAge(meta.now - meta.oldestOpenAt)}`]
+              : []),
+          ]
+        : [];
+    return [title, "", "No completed signals yet.", ...openLine, "", "Performance will appear when signals resolve."].join("\n");
+  }
+  const wins = done.filter((r) => r.outcome === "WIN").length;
+  const rs = done.map((r) => (typeof r.realized_r === "number" && Number.isFinite(r.realized_r) ? r.realized_r : 0));
+  const grossPos = rs.filter((x) => x > 0).reduce((a, b) => a + b, 0);
+  const grossNeg = Math.abs(rs.filter((x) => x <= 0).reduce((a, b) => a + b, 0));
+  const avg = rs.reduce((a, b) => a + b, 0) / rs.length;
+  const lines = [
+    title,
+    "",
+    `Signals: ${done.length}`,
+    `Win rate: ${Math.round((wins / done.length) * 1000) / 10}%`,
+    `Average R: ${perfR(avg)}`,
+    `Profit factor: ${grossNeg > 0 ? Math.round((grossPos / grossNeg) * 100) / 100 : grossPos > 0 ? "∞" : 0}`,
+    `Expectancy: ${perfR(avg)}`,
+    "",
+  ];
+  if (!category) {
+    const catR = (c: PerfRow["category"]) =>
+      done.filter((r) => r.category === c).reduce((a, r) => a + (typeof r.realized_r === "number" ? r.realized_r : 0), 0);
+    lines.push(
+      `Crypto: ${perfR(catR("crypto"))}`,
+      `Stocks: ${perfR(catR("stocks"))}`,
+      `Commodities: ${perfR(catR("commodities"))}`,
+      "",
+    );
+  }
+  const bands = ["90–100", "80–89", "70–79", "60–69", "<60"];
+  const bandRows = bands
+    .map((b) => ({ band: b, rs: done.filter((r) => perfBand(r.score) === b).map((r) => (typeof r.realized_r === "number" ? r.realized_r : 0)) }))
+    .filter((b) => b.rs.length > 0);
+  if (bandRows.length > 0) {
+    const best = bandRows
+      .map((b) => ({ band: b.band, avg: b.rs.reduce((a, x) => a + x, 0) / b.rs.length }))
+      .sort((a, b) => b.avg - a.avg)[0];
+    lines.push("Best score range:", `${best.band} → ${perfR(best.avg)}`, "");
+  }
+  const recent = [...done]
+    .sort((a, b) => Date.parse(b.last_seen) - Date.parse(a.last_seen))
+    .slice(0, 3);
+  if (recent.length > 0) {
+    lines.push("Recent:");
+    for (const r of recent) {
+      lines.push(`${r.symbol} ${r.direction} → ${perfR(typeof r.realized_r === "number" ? r.realized_r : 0)}`);
+    }
+  }
+  if (done.length < 30) {
+    lines.push("", `⚠️ Small sample (${done.length} completed) — treat as preliminary.`);
+  }
+  return lines.join("\n");
+}
+
+/** Split long replies on line boundaries (Telegram-safe chunks). */export function splitMessage(text: string, max = 3500): string[] {
   if (text.length <= max) return [text];
   const lines = text.split("\n");
   const chunks: string[] = [];
@@ -376,6 +561,23 @@ function analysisUrl(symbol: string): string {
   return `${SITE_URL.replace(/\/$/, "")}/#/coin/${symbol.trim()}`;
 }
 
+/** Send + return the Bot API message_id (for ack edits), null on failure. */
+async function botSendRet(botToken: string, chatId: string, text: string): Promise<number | null> {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 3500) }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = (await res.json().catch(() => null)) as { result?: { message_id?: unknown } } | null;
+    const id = body?.result?.message_id;
+    return typeof id === "number" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req: Request): Promise<Response> => {
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ ok: true }), {
@@ -431,6 +633,21 @@ Deno.serve(async (req: Request): Promise<Response> => {
       if (r.status !== 200 || !Array.isArray(r.json)) return null;
       return r.json as SignalRow[];
     },
+  };
+
+  /** Exact row count via PostgREST content-range (null when unavailable). */
+  const dbCount = async (path: string): Promise<number | null> => {
+    try {
+      const res = await fetch(`${supabaseUrl}/rest/v1/${path}`, {
+        headers: { ...dbHeaders, Prefer: "count=exact" },
+        signal: AbortSignal.timeout(10_000),
+      });
+      const cr = res.headers.get("content-range") ?? "";
+      const m = /\/(\d+)\s*$/.exec(cr);
+      return m ? Number.parseInt(m[1], 10) : null;
+    } catch {
+      return null;
+    }
   };
 
   // /stop from Telegram disables the link (chat-owned action, always safe).
@@ -607,6 +824,23 @@ Deno.serve(async (req: Request): Promise<Response> => {
             watchdogAlerting = typeof wv.alertedAt === "number" ? true : false;
           }
         }
+        // Outcome-resolver heartbeat (null row = never reported, never an error).
+        let resolver: { at: number; checked: number; resolved: number } | null = null;
+        const rs = await db(`scanner_state?key=eq.resolve-outcomes&select=value`);
+        if (rs.status === 200 && Array.isArray(rs.json) && rs.json.length > 0) {
+          const rv = (rs.json[0] as { value?: unknown }).value as {
+            at?: unknown;
+            checked?: unknown;
+            resolved?: unknown;
+          } | undefined;
+          if (rv && typeof rv.at === "number") {
+            resolver = {
+              at: rv.at,
+              checked: typeof rv.checked === "number" ? rv.checked : 0,
+              resolved: typeof rv.resolved === "number" ? rv.resolved : 0,
+            };
+          }
+        }
         await reply(
           formatStatus({
             lastRunAt,
@@ -617,6 +851,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
             lastSignalAt,
             todayCounts,
             watchdogAlerting,
+            resolver,
           }),
         );
         return ok();
@@ -693,6 +928,98 @@ Deno.serve(async (req: Request): Promise<Response> => {
         const lines = ["📚 SIGNAL HISTORY", ""];
         rows.forEach((r, i) => lines.push(formatSignalLine(r, i + 1), ""));
         await reply(lines.join("\n").trimEnd());
+        return ok();
+      }
+      case "scan": {
+        // Manual on-demand scan: acknowledge immediately, then hand off to
+        // the telegram-scan function (same deterministic engine, read-only:
+        // no history writes, no cooldown gate). The 200 returns fast so
+        // Telegram never retries into duplicate scans.
+        const ackId = await botSendRet(botToken, chat, SCAN_ACK_MESSAGE);
+        const invokeScan = async (): Promise<void> => {
+          try {
+            await fetch(`${supabaseUrl}/functions/v1/telegram-scan`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                apikey: serviceKey,
+                Authorization: `Bearer ${serviceKey}`,
+              },
+              body: JSON.stringify({ chat_id: chat, args: parsed.args, ack_message_id: ackId }),
+              signal: AbortSignal.timeout(20_000),
+            });
+          } catch {
+            // Invocation failed (scan function missing/not deployed yet):
+            // leave the ack in place and explain instead of going silent.
+            try {
+              await botSend(
+                botToken,
+                chat,
+                "⚠️ Manual scan is not available yet (scan service unreachable). The scheduled 24/7 scanner is unaffected — try /signals.",
+              );
+            } catch {
+              // best effort
+            }
+          }
+        };
+        const runtime = (
+          globalThis as unknown as { EdgeRuntime?: { waitUntil: (p: Promise<unknown>) => void } }
+        ).EdgeRuntime;
+        if (runtime && typeof runtime.waitUntil === "function") {
+          runtime.waitUntil(invokeScan());
+        } else {
+          await invokeScan();
+        }
+        return ok();
+      }
+      case "performance": {
+        const cat = parsed.category ? `category=eq.${parsed.category}&` : "";
+        const prows = await admin.query(
+          `signal_history?${cat}select=category,symbol,direction,score,outcome,realized_r,last_seen&order=last_seen.desc&limit=500`,
+        );
+        if (prows === null) {
+          await reply(DB_ERROR_MESSAGE);
+          return ok();
+        }
+        const perf = (prows as unknown as Record<string, unknown>[])
+          .filter(
+            (r) =>
+              (r.category === "crypto" || r.category === "stocks" || r.category === "commodities") &&
+              (r.direction === "LONG" || r.direction === "SHORT") &&
+              typeof r.symbol === "string" &&
+              typeof r.score === "number" &&
+              typeof r.outcome === "string" &&
+              typeof r.last_seen === "string",
+          )
+          .map((r) => ({
+            category: r.category as "crypto" | "stocks" | "commodities",
+            symbol: r.symbol as string,
+            direction: r.direction as "LONG" | "SHORT",
+            score: r.score as number,
+            outcome: r.outcome as string,
+            realized_r: typeof r.realized_r === "number" ? (r.realized_r as number) : null,
+            last_seen: r.last_seen as string,
+          }));
+        // Scope totals come from exact counts (not the 500-row sample).
+        const total = await dbCount(`signal_history?${cat}select=id`);
+        const open = await dbCount(`signal_history?${cat}outcome=is.null&select=id`);
+        let oldestOpenAt: number | null = null;
+        const oldest = await db(
+          `signal_history?${cat}outcome=is.null&select=first_seen&order=first_seen.asc&limit=1`,
+        );
+        if (oldest.status === 200 && Array.isArray(oldest.json) && oldest.json.length > 0) {
+          const t = Date.parse(String((oldest.json[0] as { first_seen?: unknown }).first_seen ?? ""));
+          if (Number.isFinite(t)) oldestOpenAt = t;
+        }
+        await reply(
+          formatPerformance(
+            perf,
+            parsed.category,
+            total !== null
+              ? { totalSignals: total, openCount: open ?? 0, oldestOpenAt, now: Date.now() }
+              : undefined,
+          ),
+        );
         return ok();
       }
       default: {

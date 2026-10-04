@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Link } from "react-router-dom";
 import { SignalAiButton } from "./SignalAiButton";
+import { timeAgo } from "./NewsList";
 import type { ScannedCoin } from "../scanner/engine";
 import type { Market } from "../market/hyperliquid/types";
 import type { StrengthClass } from "../analysis/scoring";
@@ -160,6 +161,12 @@ export const SignalCard = memo(function SignalCard({
             </span>
           </p>
         </div>
+        <p
+          className="font-mono text-[11px] text-slate-500"
+          title={Number.isFinite(s.timestamp) && s.timestamp > 0 ? new Date(s.timestamp).toLocaleString() : "Signal time unavailable"}
+        >
+          Generated {Number.isFinite(s.timestamp) && s.timestamp > 0 ? timeAgo(s.timestamp) : "time unavailable"}
+        </p>
 
         {/* Trade levels */}
         <dl className="grid grid-cols-2 gap-2">

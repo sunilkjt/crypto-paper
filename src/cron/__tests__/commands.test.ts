@@ -9,6 +9,7 @@ import {
   fmtDateTime,
   fmtTime,
   formatHelp,
+  formatPerformance,
   formatSignalDetail,
   formatSignalLine,
   formatSignalsList,
@@ -19,8 +20,23 @@ import {
   splitMessage,
   symbolFilter,
   UNPAIRED_MESSAGE,
+  type PerfRow,
   type SignalRow,
 } from "../../../supabase/functions/_shared/commands";
+import webhookSrc from "../../../supabase/functions/telegram-webhook/index.ts?raw";
+
+function perfRow(over: Partial<PerfRow> = {}): PerfRow {
+  return {
+    category: "crypto",
+    symbol: "BTC",
+    direction: "LONG",
+    score: 85,
+    outcome: "WIN",
+    realized_r: 1.5,
+    last_seen: "2026-10-01T10:00:00.000Z",
+    ...over,
+  };
+}
 
 function row(over: Partial<SignalRow> = {}): SignalRow {
   return {
@@ -86,6 +102,38 @@ describe("command parsing", () => {
     expect(symbolFilter("xyz:AAPL")).toBe("symbol.eq.XYZ:AAPL");
     expect(symbolFilter("")).toBeNull();
     expect(symbolFilter("!!!")).toBeNull();
+  });
+
+  it("parses /scan with opaque args (detail parsed by the scan endpoint)", () => {
+    expect(parseCommand("/scan")).toEqual({ cmd: "scan", args: "" });
+    expect(parseCommand("/scan crypto")).toEqual({ cmd: "scan", args: "crypto" });
+    expect(parseCommand("/scan stocks long")).toEqual({ cmd: "scan", args: "stocks long" });
+    expect(parseCommand("/scan trade 10")).toEqual({ cmd: "scan", args: "trade 10" });
+    expect(parseCommand("/scan@mybot crypto 5")).toEqual({ cmd: "scan", args: "crypto 5" });
+  });
+
+  it("parses /performance with optional category", () => {
+    expect(parseCommand("/performance")).toEqual({ cmd: "performance" });
+    expect(parseCommand("/performance crypto")).toEqual({ cmd: "performance", category: "crypto" });
+    expect(parseCommand("/performance stocks")).toEqual({ cmd: "performance", category: "stocks" });
+    expect(parseCommand("/performance commodities")).toEqual({ cmd: "performance", category: "commodities" });
+    expect(parseCommand("/performance nonsense")).toEqual({ cmd: "performance" });
+  });
+
+  it("routes natural scan requests without disturbing existing intents", () => {
+    expect(routeNatural("scan")).toBe("/scan");
+    expect(routeNatural("scan the markets")).toBe("/scan the markets");
+    expect(routeNatural("scan stocks long")).toBe("/scan stocks long");
+    expect(routeNatural("scanner status")).toBe("/status");
+    expect(routeNatural("Is the scanner running?")).toBe("/status");
+  });
+
+  it("routes natural performance requests without disturbing signal intents", () => {
+    expect(routeNatural("performance")).toBe("/performance");
+    expect(routeNatural("show stock performance")).toBe("/performance stocks");
+    expect(routeNatural("what is my win rate")).toBe("/performance");
+    expect(routeNatural("show commodity signals")).toBe("/signals commodities");
+    expect(routeNatural("show signal history")).toBe("/signals");
   });
 });
 
@@ -154,6 +202,7 @@ describe("formatters", () => {
     expect(online).toContain("Signals today:");
     expect(online).toContain("Stocks: 1");
     expect(online).toContain("Watchdog: ARMED");
+    expect(online).toContain("Manual scan: AVAILABLE");
     const stale = formatStatus({ lastRunAt: 1_000_000, perCategory: {}, lastDeliveryAt: null, now: 1_000_000 + 20 * 60_000 });
     expect(stale).toContain("delayed");
     const never = formatStatus({ lastRunAt: null, perCategory: {}, lastDeliveryAt: null, now: 2_000_000 });
@@ -163,8 +212,80 @@ describe("formatters", () => {
 
   it("help lists every command concisely", () => {
     const h = formatHelp();
-    for (const needle of ["/status", "/signals", "/today", "/last", "/history", "/help"]) {
+    for (const needle of ["/status", "/signals", "/today", "/last", "/history", "/help", "/scan", "/scan stocks", "/scan trade", "/performance", "/performance crypto"]) {
       expect(h).toContain(needle);
+    }
+  });
+
+  it("formats performance from resolved rows only", () => {
+    const text = formatPerformance([
+      perfRow({}),
+      perfRow({ symbol: "ETH", direction: "SHORT", outcome: "LOSS", realized_r: -1, last_seen: "2026-10-02T10:00:00.000Z" }),
+      perfRow({ symbol: "xyz:NVDA", category: "stocks", outcome: "WIN", realized_r: 2, score: 92, last_seen: "2026-10-03T10:00:00.000Z" }),
+      perfRow({ symbol: "GOLD", category: "commodities", outcome: "OPEN", realized_r: null }),
+    ]);
+    expect(text).toContain("📊 SIGNAL PERFORMANCE");
+    expect(text).toContain("Signals: 3");
+    expect(text).toContain("Win rate: 66.7%");
+    expect(text).toContain("Crypto:");
+    expect(text).toContain("Recent:");
+    expect(text).toContain("xyz:NVDA LONG");
+  });
+
+  it("scopes performance to a category and admits empty honestly", () => {
+    const rows = [perfRow({}), perfRow({ symbol: "xyz:NVDA", category: "stocks" })];
+    const scoped = formatPerformance(rows, "stocks");
+    expect(scoped).toContain("STOCKS");
+    expect(scoped).toContain("Signals: 1");
+    expect(scoped).not.toContain("Crypto:");
+    expect(formatPerformance([])).toContain("No completed signals yet");
+    expect(formatPerformance([perfRow({ outcome: "OPEN", realized_r: null })])).toContain("No completed signals yet");
+  });
+
+  it("distinguishes zero signals from open-but-unresolved", () => {
+    const now = 1_800_000_000_000;
+    expect(formatPerformance([], undefined, { totalSignals: 0, openCount: 0, oldestOpenAt: null, now })).toContain(
+      "No signals recorded yet",
+    );
+    const open = formatPerformance([], undefined, {
+      totalSignals: 12,
+      openCount: 12,
+      oldestOpenAt: now - (4 * 3_600_000 + 32 * 60_000),
+      now,
+    });
+    expect(open).toContain("Open signals: 12");
+    expect(open).toContain("Oldest open signal: 4h 32m");
+    expect(open).toContain("Performance will appear when signals resolve");
+  });
+
+  it("reports the resolver heartbeat in status", () => {
+    const base = {
+      lastRunAt: 1_000_000,
+      perCategory: {},
+      lastDeliveryAt: null,
+      now: 1_000_000 + 60_000,
+    };
+    expect(formatStatus(base)).toContain("Resolver: never reported");
+    expect(
+      formatStatus({ ...base, resolver: { at: 999_000, checked: 40, resolved: 12 } }),
+    ).toContain("Resolver:");
+  });
+
+  it("webhook inlined copy carries the shared source (regen via bundle:webhook)", () => {
+    // Containment (not byte-equality): the inlined copy has one known
+    // pre-existing drift (money() without the $ prefix) that predates this
+    // task and is deliberately left untouched to avoid changing live output.
+    const web = webhookSrc.replace(/\r\n/g, "\n");
+    for (const needle of [
+      "formatPerformance",
+      'cmd: "performance"',
+      "/scan trade",
+      "Manual scan: AVAILABLE",
+      "SCAN_ACK_MESSAGE",
+      "splitMessage",
+      "formatStatus",
+    ]) {
+      expect(web).toContain(needle);
     }
   });
 

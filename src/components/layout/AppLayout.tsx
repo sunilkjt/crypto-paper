@@ -5,10 +5,12 @@ import {
   Bell,
   Briefcase,
   CandlestickChart,
+  ChartLine,
   FlaskConical,
   History,
   LayoutDashboard,
   Menu,
+  MoreHorizontal,
   Radar,
   Settings,
   Star,
@@ -18,6 +20,7 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { APP_NAME } from "../../types";
+import { loadLastCoin } from "../../pages/CoinAnalysis";
 import { useMarkets } from "../../market/store";
 import { ConnectionBadge, ConnectionLine } from "../ConnectionBadge";
 import { AccountChip } from "../AccountChip";
@@ -34,7 +37,7 @@ import {
   type SignalEvent,
 } from "../../alerts";
 
-const NAV = [
+export const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/scanner", label: "Market Scanner", icon: Radar, end: false },
   { to: "/markets", label: "Markets", icon: TrendingUp, end: false },
@@ -44,16 +47,26 @@ const NAV = [
   { to: "/watchlist", label: "Watchlist", icon: Star, end: false },
   { to: "/history", label: "Signal History", icon: History, end: false },
   { to: "/backtest", label: "Backtest", icon: FlaskConical, end: false },
+  { to: "/performance", label: "Performance", icon: ChartLine, end: false },
   { to: "/paper", label: "Paper Trading", icon: Briefcase, end: false },
   { to: "/settings", label: "Settings", icon: Settings, end: false },
 ];
 
-const BOTTOM_NAV = [
+export const BOTTOM_NAV = [
   { to: "/", label: "Home", icon: LayoutDashboard, end: true },
   { to: "/scanner", label: "Scan", icon: Radar, end: false },
   { to: "/markets", label: "Markets", icon: TrendingUp, end: false },
-  { to: "/bounce", label: "Bounce", icon: ArrowUpFromDot, end: false },
   { to: "/paper", label: "Paper", icon: Briefcase, end: false },
+];
+
+export const MORE_NAV = [
+  { to: "/coin/OP", label: "Analysis", icon: CandlestickChart, end: false },
+  { to: "/bounce", label: "Bounce", icon: ArrowUpFromDot, end: false },
+  { to: "/alerts", label: "Alerts", icon: Bell, end: false },
+  { to: "/watchlist", label: "Watchlist", icon: Star, end: false },
+  { to: "/history", label: "History", icon: History, end: false },
+  { to: "/backtest", label: "Backtest", icon: FlaskConical, end: false },
+  { to: "/performance", label: "Stats", icon: ChartLine, end: false },
   { to: "/settings", label: "Setup", icon: Settings, end: false },
 ];
 
@@ -78,9 +91,14 @@ function Logo({ collapsed = false }: { collapsed?: boolean }) {
 }
 
 function NavList({ onNavigate }: { onNavigate?: () => void }) {
+  // Return to the last-viewed market instead of forcing a hardcoded default.
+  const coinHref = `/coin/${loadLastCoin() ?? "OP"}`;
+  const items = NAV.map((item) =>
+    item.label === "Coin Analysis" ? { ...item, to: coinHref } : item,
+  );
   return (
     <nav className="space-y-1">
-      {NAV.map((item) => {
+      {items.map((item) => {
         const Icon = item.icon;
         return (
           <NavLink
@@ -123,6 +141,7 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
 export default function AppLayout() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [notes, setNotes] = useState<SignalEvent[]>([]);
   const { markets } = useMarkets();
   const navigate = useNavigate();
@@ -289,9 +308,34 @@ export default function AppLayout() {
           )}
         </main>
 
-        {/* Mobile bottom nav */}
+        {/* Mobile bottom nav: 4 primary destinations + More sheet for the rest */}
         <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 backdrop-blur lg:hidden" aria-label="Primary">
-          <div className="grid grid-cols-6">
+          {moreOpen && (
+            <div className="grid grid-cols-4 gap-1 border-b border-slate-800 px-2 py-2">
+              {MORE_NAV.map((item) => {
+                const Icon = item.icon;
+                const to = item.label === "Analysis" ? `/coin/${loadLastCoin() ?? "OP"}` : item.to;
+                return (
+                  <NavLink
+                    key={item.to + item.label}
+                    to={to}
+                    end={item.end}
+                    onClick={() => setMoreOpen(false)}
+                    className={({ isActive }) =>
+                      cn(
+                        "flex flex-col items-center gap-1 rounded-lg py-2 text-[10px] font-semibold",
+                        isActive ? "text-cyan-300" : "text-slate-500"
+                      )
+                    }
+                  >
+                    <Icon className="h-5 w-5" />
+                    {item.label}
+                  </NavLink>
+                );
+              })}
+            </div>
+          )}
+          <div className="grid grid-cols-5">
             {BOTTOM_NAV.map((item) => {
               const Icon = item.icon;
               return (
@@ -299,6 +343,7 @@ export default function AppLayout() {
                   key={item.to + item.label}
                   to={item.to}
                   end={item.end}
+                  onClick={() => setMoreOpen(false)}
                   className={({ isActive }) =>
                     cn(
                       "flex flex-col items-center gap-1 py-2.5 text-[10px] font-semibold",
@@ -311,6 +356,18 @@ export default function AppLayout() {
                 </NavLink>
               );
             })}
+            <button
+              onClick={() => setMoreOpen((o) => !o)}
+              aria-expanded={moreOpen}
+              aria-label="More destinations"
+              className={cn(
+                "flex flex-col items-center gap-1 py-2.5 text-[10px] font-semibold",
+                moreOpen ? "text-cyan-300" : "text-slate-500"
+              )}
+            >
+              <MoreHorizontal className="h-5 w-5" />
+              More
+            </button>
           </div>
         </nav>
       </div>

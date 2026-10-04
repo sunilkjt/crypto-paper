@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { Search } from "lucide-react";
 import { Card, CardHeader, PageHeader } from "../components/ui";
 import { FilterGroup, SignalCard } from "../components/SignalCard";
@@ -31,6 +32,7 @@ import {
 import { cn } from "../lib/cn";
 
 type Category = "stocks" | "commodities";
+type DirectoryFilter = "ALL" | "crypto" | "stocks" | "commodities" | "other";
 type DirectionFilter = "ALL" | "LONG" | "SHORT" | "WAIT";
 type SortKey = "strength" | "newest" | "riskReward";
 
@@ -46,6 +48,100 @@ function loadCategory(): Category | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Browsable market directory over the live discovered universe (no
+ * hardcoded symbols). Shows what CAN be scanned before any scan runs, so
+ * AAPL/NVDA/GOLD-style markets are discoverable without prior knowledge.
+ */
+function MarketDirectory() {
+  const { markets } = useMarkets();
+  const [cat, setCat] = useState<DirectoryFilter>("ALL");
+  const [q, setQ] = useState("");
+  const main = useMemo(
+    () => new Set(markets.filter((m) => !m.symbol.includes(":")).map((m) => m.symbol.toUpperCase())),
+    [markets],
+  );
+  const grouped = useMemo(() => {
+    const query = q.trim().toUpperCase();
+    return markets
+      .filter((m) => (cat === "ALL" ? true : classifyMarket(m.symbol, main) === cat))
+      .filter((m) => (query ? m.symbol.toUpperCase().includes(query) : true))
+      .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  }, [markets, cat, q, main]);
+  const counts = useMemo(() => {
+    const c: Record<DirectoryFilter, number> = { ALL: markets.length, crypto: 0, stocks: 0, commodities: 0, other: 0 };
+    for (const m of markets) c[classifyMarket(m.symbol, main)] += 1;
+    return c;
+  }, [markets, main]);
+  const shown = grouped.slice(0, 60);
+  return (
+    <Card>
+      <CardHeader
+        title="Market Directory"
+        subtitle={`${markets.length} discovered markets · browse before scanning — nothing here triggers a scan`}
+      />
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-800/70 px-4 py-3 text-xs">
+        <span className="font-bold tracking-widest text-slate-500 uppercase">Show</span>
+        {(["ALL", "crypto", "stocks", "commodities", "other"] as const).map((c) => (
+          <button
+            key={c}
+            onClick={() => setCat(c)}
+            aria-pressed={cat === c}
+            className={cn("min-h-[44px] rounded-lg border px-3 font-bold", cat === c ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" : "border-slate-800 text-slate-500 hover:border-slate-700")}
+          >
+            {c === "ALL" ? `ALL (${counts.ALL})` : `${c.toUpperCase()} (${counts[c]})`}
+          </button>
+        ))}
+        <label className="relative min-h-[44px] w-full flex-1 sm:min-w-[160px] sm:max-w-[220px]">
+          <span className="sr-only">Search directory</span>
+          <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-slate-500" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value.toUpperCase())}
+            placeholder="Find: AAPL, GOLD…"
+            className="h-[44px] w-full rounded-xl border border-slate-800 bg-slate-950 pr-3 pl-9 text-xs text-slate-100 placeholder:text-slate-600 focus:border-cyan-400/60 focus:outline-none"
+          />
+        </label>
+      </div>
+      {grouped.length === 0 ? (
+        <p className="px-5 py-8 text-center text-sm text-slate-500">
+          {markets.length === 0 ? "Market list is still loading from Hyperliquid…" : "No markets match this filter."}
+        </p>
+      ) : (
+        <>
+          <ul className="grid gap-1.5 p-4 sm:grid-cols-2 lg:grid-cols-3">
+            {shown.map((m) => {
+              const cls = classifyMarket(m.symbol, main);
+              const dex = m.symbol.includes(":") ? m.symbol.slice(0, m.symbol.indexOf(":")) : "main";
+              return (
+                <li key={m.symbol}>
+                  <Link
+                    to={`/coin/${m.symbol}`}
+                    className="flex items-center justify-between gap-2 rounded-xl border border-slate-800/70 px-3 py-2 hover:border-slate-600"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs font-extrabold text-white">{m.symbol}</span>
+                      <span className="block font-mono text-[10px] text-slate-500">
+                        {cls.toUpperCase()} · dex {dex} · {m.markPrice !== null ? "live" : "no price"}
+                      </span>
+                    </span>
+                    <span className="shrink-0 font-mono text-[11px] text-slate-400">
+                      {m.markPrice !== null ? `$${m.markPrice.toLocaleString("en-US", { maximumFractionDigits: 4 })}` : "—"}
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+          <p className="border-t border-slate-800/70 px-5 py-3 text-[11px] text-slate-600">
+            Showing {shown.length} of {grouped.length} · select Stocks or Commodities below, then Start Scan.
+          </p>
+        </>
+      )}
+    </Card>
+  );
 }
 
 /**
@@ -276,7 +372,7 @@ export default function Markets() {
     <div>
       <PageHeader
         title="Markets"
-        description="Scan selected Hyperliquid stock and commodity markets. Nothing scans until you pick a category."
+        description="Scan selected Hyperliquid stock and commodity markets. Nothing scans until you pick a category. Signal timeframe is fixed at 15m."
         right={
           <div className="flex flex-wrap items-center gap-2">
             <FreshnessLabel updatedAt={updatedAt} />
@@ -285,7 +381,17 @@ export default function Markets() {
         }
       />
 
+      <p className="mb-3 text-xs leading-relaxed text-slate-500">
+        Broader Stocks/Commodities market scan over the gated HIP-3 universe (signal timeframe fixed at 15m).{" "}
+        <Link to="/scanner" className="font-bold text-cyan-300 hover:underline">Scanner</Link> is the fast browser scan
+        over the highest-volume universe — its Stocks/Commodities tabs can appear empty by design, which is why this
+        page exists. Bounce-only setups live under <Link to="/bounce" className="font-bold text-cyan-300 hover:underline">Bounce</Link>.
+      </p>
+
       {/* Category selection */}
+      <div className="mb-4">
+        <MarketDirectory />
+      </div>
       <Card>
         <CardHeader
           title="Market Category"

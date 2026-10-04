@@ -152,6 +152,7 @@ export async function fetchServerCounts(
 
 export interface ScannerHealth {
   lastRunAt: number | null;
+  lastDeliveryAt: number | null;
   perCategory: Record<string, { universe: number; scanned: number; signals: number }>;
   watchdogAlerting: boolean | null;
 }
@@ -189,6 +190,7 @@ export async function fetchScannerHealth(
     return {
       health: {
         lastRunAt: typeof lr.at === "number" ? lr.at : null,
+        lastDeliveryAt: typeof lr.lastDeliveryAt === "number" ? lr.lastDeliveryAt : null,
         perCategory,
         watchdogAlerting:
           wd && typeof wd === "object" ? (typeof wd.alertedAt === "number" ? true : false) : null,
