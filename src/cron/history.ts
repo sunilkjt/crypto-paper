@@ -59,7 +59,16 @@ export function createHistoryStore(opts: {
         throw new Error("History upsert failed: signal_history table missing (run migration 0004).");
       }
       if (!res.ok) {
-        throw new Error(`History upsert failed (HTTP ${res.status}).`);
+        // Surface the PostgREST detail (e.g. unknown-column 400s from a
+        // missing migration) so green-run log tails name the cause instead
+        // of hiding it behind a bare status code.
+        let detail = "";
+        try {
+          detail = ` ${(await res.text()).slice(0, 200)}`;
+        } catch {
+          // body unreadable — status alone still reports
+        }
+        throw new Error(`History upsert failed (HTTP ${res.status}).${detail}`);
       }
     },
     async pruneOlderThanDays(days: number): Promise<void> {
