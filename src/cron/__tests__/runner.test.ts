@@ -216,8 +216,15 @@ describe("headless runner", () => {
     expect(h.history).toHaveLength(1); // only the >=70 signal is stored
   });
 
-  it("persists signal history independent of delivery", async () => {
+  it("rounds fractional scores to the integer history column (thresholds use raw floats)", async () => {
     const h = harness();
+    // 76.5 qualifies against the 70 bar on its raw float, persists as 77.
+    h.summaries.crypto = summaryFor([coin("BTC", "LONG", 76.5), coin("ETH", "LONG", 69.4)]);
+    await runOnce(baseSettings(), deps(h));
+    expect(h.history.map((r) => [r.symbol, r.score])).toEqual([["BTC", 77]]);
+  });
+
+  it("persists signal history independent of delivery", async () => {    const h = harness();
     // Delivery fails, but the qualifying signal must still land in history.
     const failingDeliver = {
       ...deps(h),

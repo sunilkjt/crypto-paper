@@ -249,7 +249,10 @@ export async function runOnce(settings: CronSettings, deps: RunnerDeps): Promise
           category,
           symbol: r.symbol,
           direction: r.signal.direction,
-          score: r.signal.signalStrength,
+          // DB column is integer while the engine scores fractional: round
+          // at the write boundary only. Qualification above still uses the
+          // raw float, so thresholds are untouched.
+          score: Math.round(r.signal.signalStrength),
           timeframe: r.signal.timeframe,
           entry_low: r.signal.entryLow,
           entry_high: r.signal.entryHigh,
