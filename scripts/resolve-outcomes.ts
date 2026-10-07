@@ -110,13 +110,33 @@ async function main(): Promise<void> {
   }
   if (rows.length === 0) {
     log("nothing unresolved — done");
-    return;
+  } else {
+    log(`${rows.length} unresolved rows`);
   }
-  log(`${rows.length} unresolved rows`);
 
   let resolved = 0;
   let skippedOpen = 0;
   let failed = 0;
+
+  // Heartbeat for /status + diagnostics. Separate scanner_state key —
+  // cron-monitor is never touched. Always written, even when there was
+  // nothing to resolve, so "never reported" unambiguously means the job
+  // has not run (not "ran with zero work"). Best-effort: a failed
+  // heartbeat never fails the run.
+  const writeHeartbeat = async (): Promise<void> => {
+    try {
+      const store = createSupabaseStateStore({ url: supabaseUrl, serviceKey });
+      await store.saveValue("resolve-outcomes", {
+        at: Date.now(),
+        checked: rows.length,
+        resolved,
+        skippedOpen,
+        failed,
+      });
+    } catch (e) {
+      log(`heartbeat skipped: ${e instanceof Error ? e.message : "unknown"}`);
+    }
+  };
 
   const patch = async (id: string, body: Record<string, unknown>): Promise<boolean> => {
     try {
@@ -177,21 +197,7 @@ async function main(): Promise<void> {
   );
 
   log(`done: resolved=${resolved} open-skipped=${skippedOpen} failed=${failed}`);
-  // Resolver heartbeat for /status + diagnostics. Separate scanner_state
-  // key — cron-monitor is never touched. Best-effort: a failed heartbeat
-  // must never fail the run.
-  try {
-    const store = createSupabaseStateStore({ url: supabaseUrl, serviceKey });
-    await store.saveValue("resolve-outcomes", {
-      at: Date.now(),
-      checked: rows.length,
-      resolved,
-      skippedOpen,
-      failed,
-    });
-  } catch (e) {
-    log(`heartbeat skipped: ${e instanceof Error ? e.message : "unknown"}`);
-  }
+  await writeHeartbeat();
   if (rows.length > 0 && resolved === 0 && failed === rows.length) {
     console.error("[resolve-outcomes] every row failed");
     process.exit(1);
