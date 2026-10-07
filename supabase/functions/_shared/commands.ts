@@ -413,8 +413,11 @@ export function formatPerformance(
     ? `📊 SIGNAL PERFORMANCE — ${category === "crypto" ? "CRYPTO" : category === "stocks" ? "STOCKS" : "COMMODITIES"}`
     : "📊 SIGNAL PERFORMANCE";
   if (done.length === 0) {
+    // Genuinely empty table: the scheduled scanner has not persisted
+    // anything (manual /scan results are calculated + sent only and are
+    // deliberately never written to history — so /scan is NOT suggested).
     if (meta && meta.totalSignals === 0) {
-      return [title, "", "No signals recorded yet."].join("\n");
+      return [title, "", "No signal records found.", "", "Wait for the scheduled scanner to generate signals."].join("\n");
     }
     const openLine =
       meta && meta.openCount > 0

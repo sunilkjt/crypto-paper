@@ -244,9 +244,10 @@ describe("formatters", () => {
 
   it("distinguishes zero signals from open-but-unresolved", () => {
     const now = 1_800_000_000_000;
-    expect(formatPerformance([], undefined, { totalSignals: 0, openCount: 0, oldestOpenAt: null, now })).toContain(
-      "No signals recorded yet",
-    );
+    const zero = formatPerformance([], undefined, { totalSignals: 0, openCount: 0, oldestOpenAt: null, now });
+    expect(zero).toContain("No signal records found");
+    expect(zero).toContain("scheduled scanner");
+    expect(zero).not.toContain("/scan");
     const open = formatPerformance([], undefined, {
       totalSignals: 12,
       openCount: 12,
