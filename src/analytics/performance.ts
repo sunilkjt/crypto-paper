@@ -357,6 +357,22 @@ export interface ResolvedSignal {
   firstSeen: number;
   /** Mid of the signal entry zone (null when the plan stored no entry). */
   entryMid: number | null;
+  /** Full stored plan legs (null when unrecorded). Display only — never recalculated. */
+  entryLow: number | null;
+  entryHigh: number | null;
+  invalidation: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  tp3: number | null;
+  riskReward: number | null;
+  /** Engine entry type at generation (null for legacy rows). */
+  entryType: "MARKET" | "RETEST" | null;
+  /** Last time the row was seen/updated server-side. */
+  lastSeen: number | null;
+  /** When the resolver wrote the verdict (null while unresolved). */
+  resolvedAt: number | null;
+  /** Stored reasons (empty when unrecorded — never invented). */
+  reasons: string[];
   verdict: SignalVerdict;
   realizedR: number | null;
   exitPrice: number | null;

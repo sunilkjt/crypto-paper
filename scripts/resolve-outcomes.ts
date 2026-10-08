@@ -19,7 +19,7 @@
 
 import { getCachedCandles } from "../src/market/hyperliquid/index.js";
 import { createSupabaseStateStore } from "../src/cron/state.js";
-import { normalizeTimeframe, runResolverJob, type ResolverHeartbeat } from "../src/cron/resolveJob.js";
+import { runResolverJob, type ResolverHeartbeat } from "../src/cron/resolveJob.js";
 import type { ResolvePatch, UnresolvedRowLike } from "../src/analytics/resolve.js";
 import type { Timeframe } from "../src/market/hyperliquid/types.js";
 

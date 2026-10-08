@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Search } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Card, CardHeader, PageHeader } from "../components/ui";
@@ -29,6 +29,7 @@ import {
   type QualityStatus,
 } from "../analytics/quality";
 import { fetchResolvedSignals } from "../analytics/resolved";
+import { SignalDetailsModal } from "../components/SignalDetails";
 import { cn } from "../lib/cn";
 
 type SymbolSort = "totalR" | "winRate" | "avgR" | "signals";
@@ -237,6 +238,15 @@ export default function Performance() {
   const [range, setRange] = useState<DateRange>("all");
   const [query, setQuery] = useState("");
   const [symbolSort, setSymbolSort] = useState<SymbolSort>("totalR");
+  // Deep-linkable selection: ?signal=<id> opens the details modal; browser
+  // back clears the param, which closes the modal (single source of truth).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedId = searchParams.get("signal");
+  const marks = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const mk of markets) if (mk.markPrice !== null) m.set(mk.symbol, mk.markPrice);
+    return m;
+  }, [markets]);
 
   useEffect(() => {
     if (!user) {
@@ -293,6 +303,9 @@ export default function Performance() {
         .slice(0, 15),
     [filtered],
   );
+  const selected = selectedId !== null ? (filtered.find((r) => r.id === selectedId) ?? rows.find((r) => r.id === selectedId) ?? null) : null;
+  const openSignal = (id: string) => setSearchParams({ signal: id });
+  const closeSignal = () => setSearchParams({});
 
   // Paper comparison (aggregates only — trades carry no signal ids, so
   // per-signal linkage is impossible; the limitation is stated, not worked
@@ -521,27 +534,42 @@ export default function Performance() {
 
           {/* Recent results */}
           <Card className="mt-4">
-            <CardHeader title="Recent Results" subtitle="Latest completed + open signals in this view" />
+            <CardHeader title="Recent Results" subtitle="Latest completed + open signals in this view — click any row for full details" />
             {recent.length === 0 ? (
               <p className="px-5 py-8 text-center text-sm text-slate-500">No results in this view yet.</p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-left text-xs" style={{ minWidth: 760 }}>
+                <table className="w-full border-collapse text-left text-xs" style={{ minWidth: 820 }}>
                   <thead>
                     <tr className="border-b border-slate-800 text-[10px] tracking-widest text-slate-500 uppercase">
-                      {["Time", "Symbol", "Dir", "Score", "Entry", "Outcome", "R", "Path"].map((c) => (
+                      {["Time", "Symbol", "Dir", "Score", "Entry", "Outcome", "R", "Path", ""].map((c) => (
                         <th key={c} className="px-3 py-2.5 font-semibold whitespace-nowrap">{c}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {recent.map((r) => (
-                      <tr key={r.id} className="border-b border-slate-800/50 font-mono last:border-0 hover:bg-slate-900/50">
+                      <tr
+                        key={r.id}
+                        onClick={() => openSignal(r.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            openSignal(r.id);
+                          }
+                        }}
+                        tabIndex={0}
+                        role="button"
+                        aria-label={`Signal details for ${r.symbol} ${r.direction}`}
+                        className="cursor-pointer border-b border-slate-800/50 font-mono last:border-0 hover:bg-slate-900/50 focus-visible:outline-2 focus-visible:outline-cyan-400"
+                      >
                         <td className="px-3 py-2 whitespace-nowrap text-slate-400">
                           {new Date(r.outcomeAt ?? r.firstSeen).toLocaleString()}
                         </td>
-                        <td className="px-3 py-2 font-bold text-white">
-                          <Link to={`/coin/${r.symbol}`} className="hover:text-cyan-300">{r.symbol}</Link>
+                        <td className="px-3 py-2 font-bold text-white" onClick={(e) => e.stopPropagation()}>
+                          <Link to={`/coin/${r.symbol}`} className="hover:text-cyan-300" aria-label={`Open live ${r.symbol} analysis`}>
+                            {r.symbol}
+                          </Link>
                         </td>
                         <td className={cn("px-3 py-2 font-bold", r.direction === "LONG" ? "text-emerald-300" : "text-rose-300")}>{r.direction}</td>
                         <td className="px-3 py-2 text-slate-200">{r.score}</td>
@@ -553,6 +581,9 @@ export default function Performance() {
                           {r.realizedR !== null ? fmtR(r.realizedR) : "—"}
                         </td>
                         <td className="px-3 py-2 font-sans text-[11px] text-slate-500">{r.decidedBy}</td>
+                        <td className="px-3 py-2 text-right font-sans text-xs font-bold whitespace-nowrap text-cyan-300">
+                          View <span aria-hidden="true">→</span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -560,6 +591,13 @@ export default function Performance() {
               </div>
             )}
           </Card>
+          {selected !== null && (
+            <SignalDetailsModal
+              signal={selected}
+              liveMark={marks.get(selected.symbol) ?? null}
+              onClose={closeSignal}
+            />
+          )}
 
           {/* Paper comparison */}
           <Card className="mt-4">

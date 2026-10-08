@@ -149,6 +149,17 @@ function resolved(over: Partial<ResolvedSignal> & { id: string }): ResolvedSigna
     ambiguous: false,
     setupType: "TREND",
     quality: "MEDIUM QUALITY",
+    entryLow: 99,
+    entryHigh: 101,
+    invalidation: 95,
+    tp1: 105,
+    tp2: 110,
+    tp3: 115,
+    riskReward: 2,
+    entryType: "MARKET",
+    lastSeen: T0 + H,
+    resolvedAt: T0 + H,
+    reasons: [],
     ...over,
   };
 }

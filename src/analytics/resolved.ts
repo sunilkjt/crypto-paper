@@ -13,6 +13,10 @@ export interface ResolvedRow {
   first_seen: unknown;
   entry_low: unknown;
   entry_high: unknown;
+  invalidation: unknown;
+  tp1: unknown;
+  tp2: unknown;
+  tp3: unknown;
   outcome: unknown;
   outcome_at: unknown;
   exit_price: unknown;
@@ -23,6 +27,11 @@ export interface ResolvedRow {
   ambiguous: unknown;
   setup_type: unknown;
   quality: unknown;
+  entry_type: unknown;
+  risk_reward: unknown;
+  last_seen: unknown;
+  resolved_at: unknown;
+  reasons: unknown;
 }
 
 function numOrNull(v: unknown): number | null {
@@ -58,6 +67,9 @@ export function mapResolvedRow(row: ResolvedRow): ResolvedSignal | null {
     typeof row.entry_low === "number" && typeof row.entry_high === "number"
       ? (row.entry_low + row.entry_high) / 2
       : numOrNull(row.entry_low);
+  const reasons = Array.isArray(row.reasons)
+    ? (row.reasons as unknown[]).filter((h): h is string => typeof h === "string")
+    : [];
   return {
     id: row.id,
     symbol: row.symbol,
@@ -77,6 +89,17 @@ export function mapResolvedRow(row: ResolvedRow): ResolvedSignal | null {
     ambiguous: row.ambiguous === true,
     setupType: typeof row.setup_type === "string" ? row.setup_type : null,
     quality: typeof row.quality === "string" ? row.quality : null,
+    entryLow: numOrNull(row.entry_low),
+    entryHigh: numOrNull(row.entry_high),
+    invalidation: numOrNull(row.invalidation),
+    tp1: numOrNull(row.tp1),
+    tp2: numOrNull(row.tp2),
+    tp3: numOrNull(row.tp3),
+    riskReward: numOrNull(row.risk_reward),
+    entryType: row.entry_type === "MARKET" || row.entry_type === "RETEST" ? row.entry_type : null,
+    lastSeen: msOrNull(row.last_seen),
+    resolvedAt: msOrNull(row.resolved_at),
+    reasons,
   };
 }
 
