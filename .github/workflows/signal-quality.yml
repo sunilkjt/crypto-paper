@@ -1,0 +1,102 @@
+# Continuous signal-quality testing (measurement only — never tuning).
+#
+# Three schedules, one script:
+# - verify (every push): unit tests + typecheck/build + lint, including the
+#   golden strategy regression and runner safety guards. No secrets needed.
+# - live (daily 06:00 UTC): full read-only analysis against Supabase
+#   (resolved signals, heartbeats, backlog counts, one candle probe),
+#   writes reports/signal-quality.json|.md as artifacts, drafts a GitHub
+#   issue on qualifying regressions, Telegram-alerts CRITICAL infra/data.
+# - infra (every 6 hours): heartbeat/backlog/probe checks only (fast).
+#
+# The runner never imports the strategy, never writes to any table, never
+# calls AI. It detects and reports. Severity gating (sample minimums,
+# infra-before-strategy) lives in src/analytics/quality.ts (unit-tested).
+#
+# Required repo secrets (server-side only, live/infra jobs):
+#   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN (alerts only)
+
+name: Signal quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * *"
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Runner mode for manual runs"
+        required: false
+        default: "live"
+        type: choice
+        options: [live, infra]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm run lint
+
+  live:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Run signal-quality analysis
+        id: quality
+        run: npm run quality:test -- --mode=${{ inputs.mode || (github.event.schedule == '0 */6 * * *' && 'infra' || 'live') }} --telegram
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      - name: Upload quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signal-quality-${{ github.run_id }}
+          path: reports/
+          retention-days: 90
+          if-no-files-found: warn
+      - name: Open regression issue (deduplicated)
+        if: always() && hashFiles('reports/issue.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SIG=$(jq -r .signature reports/issue.json)
+          TITLE=$(jq -r .title reports/issue.json)
+          if gh issue list --label signal-quality --state open --json title --jq -r '.[].title' | grep -qF "[$SIG]"; then
+            echo "Duplicate suppressed (open issue already tracks [$SIG])."
+          else
+            jq -r .body reports/issue.json > /tmp/issue-body.md
+            gh label create signal-quality --color 0E8A16 --description "Continuous signal-quality findings" 2>/dev/null || true
+            gh label create critical --color B60205 --description "Critical severity" 2>/dev/null || true
+            gh label create warning --color FBCA04 --description "Warning severity" 2>/dev/null || true
+            LABELS=$(jq -r '.labels | join(",")' reports/issue.json)
+            gh issue create --title "$TITLE" --body-file /tmp/issue-body.md --label "$LABELS"
+          fi

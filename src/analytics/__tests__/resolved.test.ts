@@ -21,6 +21,8 @@ function row(over: Record<string, unknown> = {}) {
     activation_price: null,
     activation_at: null,
     ambiguous: null,
+    setup_type: "TREND",
+    quality: "MEDIUM QUALITY",
     ...over,
   };
 }

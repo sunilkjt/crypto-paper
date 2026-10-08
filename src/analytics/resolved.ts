@@ -4,9 +4,8 @@ import type { ResolvedSignal, SignalVerdict } from "./performance";
 
 const VERDICTS: SignalVerdict[] = ["WIN", "LOSS", "BREAKEVEN", "EXPIRED", "OPEN", "UNKNOWN", "NO_FILL", "INVALIDATED"];
 
-interface ResolvedRow {
-  id: unknown;
-  symbol: unknown;
+export interface ResolvedRow {
+  id: unknown;  symbol: unknown;
   category: unknown;
   direction: unknown;
   timeframe: unknown;
@@ -22,6 +21,8 @@ interface ResolvedRow {
   activation_price: unknown;
   activation_at: unknown;
   ambiguous: unknown;
+  setup_type: unknown;
+  quality: unknown;
 }
 
 function numOrNull(v: unknown): number | null {
@@ -74,6 +75,8 @@ export function mapResolvedRow(row: ResolvedRow): ResolvedSignal | null {
     activationPrice: numOrNull(row.activation_price),
     activationTs: msOrNull(row.activation_at),
     ambiguous: row.ambiguous === true,
+    setupType: typeof row.setup_type === "string" ? row.setup_type : null,
+    quality: typeof row.quality === "string" ? row.quality : null,
   };
 }
 

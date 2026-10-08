@@ -155,6 +155,8 @@ export interface ScannerHealth {
   lastDeliveryAt: number | null;
   perCategory: Record<string, { universe: number; scanned: number; signals: number }>;
   watchdogAlerting: boolean | null;
+  /** Outcome-resolver heartbeat (null = never reported). */
+  resolver: { at: number; checked: number; resolved: number } | null;
 }
 
 /** Cron heartbeat + watchdog arming for the dashboard health panel. */
@@ -165,7 +167,7 @@ export async function fetchScannerHealth(
     const { data, error } = await client
       .from("scanner_state")
       .select("key,value")
-      .in("key", ["cron-monitor", "watchdog"]);
+      .in("key", ["cron-monitor", "watchdog", "resolve-outcomes"]);
     if (error) return { health: null, error: "Scanner health unavailable." };
     const rows = ((data ?? []) as Array<{ key?: unknown; value?: unknown }>);
     const byKey = new Map(rows.filter((r) => typeof r.key === "string").map((r) => [r.key as string, r.value]));
@@ -187,6 +189,7 @@ export async function fetchScannerHealth(
       }
     }
     const wd = byKey.get("watchdog") as { alertedAt?: unknown } | undefined;
+    const rs = byKey.get("resolve-outcomes") as { at?: unknown; checked?: unknown; resolved?: unknown } | undefined;
     return {
       health: {
         lastRunAt: typeof lr.at === "number" ? lr.at : null,
@@ -194,6 +197,14 @@ export async function fetchScannerHealth(
         perCategory,
         watchdogAlerting:
           wd && typeof wd === "object" ? (typeof wd.alertedAt === "number" ? true : false) : null,
+        resolver:
+          rs && typeof rs === "object" && typeof rs.at === "number"
+            ? {
+                at: rs.at,
+                checked: typeof rs.checked === "number" ? rs.checked : 0,
+                resolved: typeof rs.resolved === "number" ? rs.resolved : 0,
+              }
+            : null,
       },
       error: null,
     };

@@ -7,6 +7,7 @@ import { CategoryChip, FilterGroup } from "../components/SignalCard";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { useAuth } from "../supabase/auth";
 import { getSupabase } from "../supabase/client";
+import { useScannerHealth } from "../supabase/history";
 import { useMarkets } from "../market/store";
 import { getSharedPaperEngine, realizedR } from "../paper";
 import {
@@ -18,6 +19,15 @@ import {
   type PerformanceFilters,
   type ResolvedSignal,
 } from "../analytics/performance";
+import {
+  classifyQualityStatus,
+  classifySample,
+  computeExtendedMetrics,
+  detectInfraProblems,
+  detectStrategyProblems,
+  snapshotWindow,
+  type QualityStatus,
+} from "../analytics/quality";
 import { fetchResolvedSignals } from "../analytics/resolved";
 import { cn } from "../lib/cn";
 
@@ -36,6 +46,118 @@ function fmtR(v: number): string {
 
 function fmtPF(v: number): string {
   return v === Infinity ? "∞" : v.toFixed(2);
+}
+
+function fmtAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const m = Math.floor(ms / 60_000);
+  if (m < 1) return "<1m";
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+const STATUS_META: Record<QualityStatus, { emoji: string; chip: string }> = {
+  HEALTHY: { emoji: "🟢", chip: "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" },
+  WATCH: { emoji: "🟡", chip: "border-amber-400/30 bg-amber-400/10 text-amber-300" },
+  WARNING: { emoji: "🟠", chip: "border-orange-400/30 bg-orange-400/10 text-orange-300" },
+  CRITICAL: { emoji: "🔴", chip: "border-rose-400/30 bg-rose-400/10 text-rose-300" },
+  INSUFFICIENT_DATA: { emoji: "⚪", chip: "border-slate-700 bg-slate-800 text-slate-400" },
+};
+
+/**
+ * Signal Quality Monitor: continuous-measurement summary over the FULL
+ * server history (unfiltered) plus live cron/resolver heartbeats. No
+ * tuning, no thresholds changed here — detection display only.
+ */
+function QualityMonitor({ rows }: { rows: ResolvedSignal[] }) {
+  const { health } = useScannerHealth(true);
+  const m = useMemo(() => {
+    const now = Date.now();
+    const all = computePerformanceStats(rows);
+    const ext = computeExtendedMetrics(rows);
+    const openRows = rows.filter((r) => r.verdict === "OPEN");
+    const week = now - 7 * 86_400_000;
+    const twoWeeks = now - 14 * 86_400_000;
+    const infra = detectInfraProblems({
+      now,
+      cronLastRunAt: health?.lastRunAt ?? null,
+      resolverAt: health?.resolver?.at ?? null,
+      unresolvedCount: openRows.length,
+      oldestUnresolvedAt: openRows.length > 0 ? Math.min(...openRows.map((r) => r.firstSeen)) : null,
+      totalSignals: rows.length,
+      lastSignalAt: null,
+      dbError: null,
+      marketProbeOk: null,
+      recentSignals: rows.filter((r) => r.firstSeen >= week).length,
+      priorSignals: rows.filter((r) => r.firstSeen >= twoWeeks && r.firstSeen < week).length,
+    });
+    const strategy = detectStrategyProblems({ stats: all, ext, rows });
+    const alerts = [...infra, ...strategy];
+    return {
+      now,
+      all,
+      ext,
+      alerts,
+      status: classifyQualityStatus(alerts, all.completed),
+      sample: classifySample(all.completed),
+      snap7: snapshotWindow(rows, 7, now),
+      snap30: snapshotWindow(rows, 30, now),
+    };
+  }, [rows, health]);
+  const meta = STATUS_META[m.status];
+  const noFillPct = rows.length > 0 ? ((m.all.noFill / rows.length) * 100).toFixed(1) : "—";
+  const invPct = rows.length > 0 ? ((m.all.invalidated / rows.length) * 100).toFixed(1) : "—";
+  const actN = m.all.wins + m.all.losses + m.all.breakeven + m.all.expired;
+  const ambPct = actN > 0 ? ((m.all.ambiguous / actN) * 100).toFixed(1) : "—";
+  return (
+    <Card className="mb-4">
+      <CardHeader
+        title="Signal Quality Monitor"
+        subtitle="Continuous measurement over full history + live heartbeats — detection only, never tuning"
+        right={
+          <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-bold", meta.chip)}>
+            <span aria-hidden="true">{meta.emoji}</span> {m.status.replace("_", " ")}
+          </span>
+        }
+      />
+      <div className="grid grid-cols-2 gap-2.5 p-4 sm:grid-cols-3 lg:grid-cols-6">
+        {[
+          ["Sample", `${m.sample} (${m.all.completed})`],
+          ["Win Rate", `${m.all.winRate.toFixed(1)}%`],
+          ["Profit Factor", fmtPF(m.all.profitFactor)],
+          ["Expectancy", fmtR(m.all.expectancy)],
+          ["Average R", fmtR(m.all.avgR)],
+          ["NO_FILL %", `${noFillPct}%`],
+          ["Invalidated %", `${invPct}%`],
+          ["Ambiguous %", `${ambPct}%`],
+          ["Cron Heartbeat", m.now && health?.lastRunAt ? fmtAge(m.now - health.lastRunAt) + " ago" : "never"],
+          ["Resolver Heartbeat", health?.resolver ? fmtAge(m.now - health.resolver.at) + " ago" : "never"],
+          ["7d avg R", fmtR(m.snap7.averageR)],
+          ["30d avg R", fmtR(m.snap30.averageR)],
+        ].map(([k, v]) => (
+          <div key={k} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+            <p className="text-[10px] font-bold tracking-widest text-slate-500 uppercase">{k}</p>
+            <p className="mt-1 font-mono text-sm font-bold break-words text-slate-100">{v}</p>
+          </div>
+        ))}
+      </div>
+      {m.alerts.length > 0 && (
+        <ul className="space-y-1.5 px-4 pb-2 text-xs">
+          {m.alerts.slice(0, 6).map((a) => (
+            <li key={a.code} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-slate-300">
+              <span className="font-bold text-slate-100">[{a.severity}/{a.domain}] {a.code}:</span> {a.message}{" "}
+              <span className="font-mono text-[11px] text-slate-500">({a.evidence})</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="px-5 py-3 text-[11px] leading-relaxed text-slate-600">
+        Correlation is not proof of causation. Small samples must not drive strategy changes — see Methodology.
+      </p>
+    </Card>
+  );
 }
 
 function VerdictChip({ verdict }: { verdict: string }) {
@@ -299,6 +421,9 @@ export default function Performance() {
               </div>
             ))}
           </div>
+
+          {/* Signal Quality Monitor (full history + heartbeats) */}
+          <QualityMonitor rows={rows} />
 
           {/* Cumulative R chart */}
           <Card className="mb-4">

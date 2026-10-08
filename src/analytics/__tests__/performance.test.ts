@@ -147,6 +147,8 @@ function resolved(over: Partial<ResolvedSignal> & { id: string }): ResolvedSigna
     activationPrice: 100,
     activationTs: T0,
     ambiguous: false,
+    setupType: "TREND",
+    quality: "MEDIUM QUALITY",
     ...over,
   };
 }

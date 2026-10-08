@@ -4,7 +4,7 @@
 // import.meta.env read) can take down a scheduled job at import time.
 import { spawnSync } from "node:child_process";
 
-const entries = ["scripts/scan-cron.ts", "scripts/cron-watchdog.ts", "scripts/resolve-outcomes.ts"];
+const entries = ["scripts/scan-cron.ts", "scripts/cron-watchdog.ts", "scripts/resolve-outcomes.ts", "scripts/signal-quality-test.ts"];
 const scrubbed = { ...process.env };
 for (const k of ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "TELEGRAM_BOT_TOKEN"]) {
   delete scrubbed[k];

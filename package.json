@@ -11,6 +11,7 @@
     "test": "vitest run",
     "scan:cron": "tsx scripts/scan-cron.ts",
     "resolve:outcomes": "tsx scripts/resolve-outcomes.ts",
+    "quality:test": "tsx scripts/signal-quality-test.ts",
     "scan:watchdog": "tsx scripts/cron-watchdog.ts",
     "supabase:doctor": "tsx scripts/supabase-doctor.ts",
     "bundle:webhook": "node scripts/bundle-webhook.mjs",

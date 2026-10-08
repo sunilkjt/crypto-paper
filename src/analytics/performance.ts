@@ -367,6 +367,10 @@ export interface ResolvedSignal {
   activationTs: number | null;
   /** True when a conservative same-bar fallback decided the outcome. */
   ambiguous: boolean;
+  /** Setup classification at generation time (null when unrecorded). */
+  setupType: string | null;
+  /** Engine quality tag at generation time (null when unrecorded). */
+  quality: string | null;
 }
 
 export interface GroupStats {
