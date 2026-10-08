@@ -163,10 +163,37 @@ export const SignalCard = memo(function SignalCard({
         </div>
         <p
           className="font-mono text-[11px] text-slate-500"
-          title={Number.isFinite(s.timestamp) && s.timestamp > 0 ? new Date(s.timestamp).toLocaleString() : "Signal time unavailable"}
+          title={Number.isFinite(s.timestamp) && s.timestamp > 0 ? `Signal candle closed ${new Date(s.timestamp).toLocaleString()}` : "Signal time unavailable"}
         >
           Generated {Number.isFinite(s.timestamp) && s.timestamp > 0 ? timeAgo(s.timestamp) : "time unavailable"}
         </p>
+
+        {/* Entry executability: MARKET = price inside the zone (immediate),
+            RETEST = price must return first (never an immediate order). */}
+        {s.entryType !== null && s.entryStatus !== null && (
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px]">
+            <span className="text-slate-500">
+              Current{" "}
+              <span className="font-mono font-bold text-slate-200">
+                {market?.markPrice != null ? `$${formatPrice(market.markPrice, r.symbol)}` : "—"}
+              </span>
+            </span>
+            <span className="text-slate-600">·</span>
+            <span className="text-slate-500">
+              Entry type{" "}
+              <span className={cn("font-bold", s.entryType === "MARKET" ? "text-emerald-300" : "text-amber-300")}>
+                {s.entryType}
+              </span>
+            </span>
+            <span className="text-slate-600">·</span>
+            <span className="text-slate-500">
+              Status{" "}
+              <span className="font-bold text-slate-200">
+                {s.entryStatus === "READY" ? "READY" : "WAIT FOR RETEST"}
+              </span>
+            </span>
+          </div>
+        )}
 
         {/* Trade levels */}
         <dl className="grid grid-cols-2 gap-2">

@@ -3,8 +3,10 @@ import type { Candle } from "../../market/hyperliquid/types";
 import {
   applyPerformanceFilters,
   computePerformanceStats,
+  orderBarTouches,
   replayThirds,
   scoreBand,
+  zoneIntersects,
   type ReplayInput,
   type ResolvedSignal,
 } from "../performance";
@@ -26,6 +28,8 @@ function longInput(candles: Candle[], over?: Partial<ReplayInput>): ReplayInput 
     tp1: 105,
     tp2: 110,
     tp3: 115,
+    entryLow: null,
+    entryHigh: null,
     followCandles: candles,
     signalTs: T0,
     maxLifetimeMs: 24 * H,
@@ -63,11 +67,14 @@ describe("replayThirds outcomes", () => {
     expect(loss.realizedR).toBeCloseTo(-1, 8);
   });
 
-  it("processes the stop before targets on the same bar (conservative)", () => {
-    // Bar touches BOTH TP1 (high 106) and the stop (low 94): stop wins.
+  it("processes the stop before targets on the same bar (conservative, flagged)", () => {
+    // Bar touches BOTH TP1 (high 106) and the stop (low 94): stop wins,
+    // flagged ambiguous (order unknowable from OHLC alone).
     const r = replayThirds(longInput([candle(T0 + H, 106, 94)]));
     expect(r.verdict).toBe("LOSS");
-    expect(r.decidedBy).toBe("STOP");
+    expect(r.decidedBy).toBe("STOP* (ambiguous bar)");
+    expect(r.ambiguous).toBe(true);
+    expect(r.ambiguousBar).toMatchObject({ target: 105, targetName: "TP1" });
   });
 
   it("TP1 then stop blends to a small loss (no invented WIN)", () => {
@@ -137,6 +144,9 @@ function resolved(over: Partial<ResolvedSignal> & { id: string }): ResolvedSigna
     exitPrice: 105,
     outcomeAt: T0 + H,
     decidedBy: "TP1→TP2→TP3",
+    activationPrice: 100,
+    activationTs: T0,
+    ambiguous: false,
     ...over,
   };
 }
@@ -191,8 +201,7 @@ describe("computePerformanceStats", () => {
   });
 });
 
-describe("scoreBand + filters", () => {
-  it("bands scores per spec", () => {
+describe("scoreBand + filters", () => {  it("bands scores per spec", () => {
     expect(scoreBand(95)).toBe("90–100");
     expect(scoreBand(85)).toBe("80–89");
     expect(scoreBand(75)).toBe("70–79");
@@ -213,5 +222,91 @@ describe("scoreBand + filters", () => {
     expect(
       applyPerformanceFilters(rows, { ...base, range: "30d" }, T0 + H).map((r) => r.id),
     ).toEqual(["a"]);
+  });
+});
+
+describe("activation gating (RETEST vs MARKET)", () => {
+  // Zone 98–100, price action around it. RETEST requires a touch first.
+  const zone = { entryLow: 98, entryHigh: 100, immediate: false };
+
+  it("activates on zone touch, then measures TP/SL from there", () => {
+    const r = replayThirds(
+      longInput([candle(T0 + H, 101, 99), candle(T0 + 2 * H, 106, 104), candle(T0 + 3 * H, 111, 109), candle(T0 + 4 * H, 116, 114)], zone),
+    );
+    expect(r.activated).toBe(true);
+    expect(r.activationTs).toBe(T0 + H);
+    expect(r.verdict).toBe("WIN");
+  });
+
+  it("never activates when price runs without touching the zone (NOT A TRADE)", () => {
+    // 103 → 110 straight up, zone 98–100 untouched (default 24h lifetime).
+    const candles = [candle(T0 + H, 104, 103), candle(T0 + 2 * H, 108, 106), candle(T0 + 3 * H, 111, 109)];
+    const open = replayThirds(longInput(candles, zone));
+    expect(open.verdict).toBe("OPEN");
+    expect(open.activated).toBe(false);
+    const nofill = replayThirds(longInput([...candles, ...Array.from({ length: 30 }, (_, i) => candle(T0 + (4 + i) * H, 112, 110))], zone));
+    expect(nofill.verdict).toBe("NO_FILL");
+    expect(nofill.realizedR).toBeNull();
+  });
+
+  it("marks INVALIDATED when the stop prints before any zone touch (never a loss)", () => {
+    const r = replayThirds(longInput([candle(T0 + H, 103, 102), candle(T0 + 2 * H, 102, 94)], zone));
+    expect(r.verdict).toBe("INVALIDATED");
+    expect(r.activated).toBe(false);
+    expect(r.realizedR).toBeNull();
+  });
+
+  it("pre-activation zone+stop same bar is INVALIDATED and flagged", () => {
+    // Bar range 93–99 overlaps zone 98–100 AND touches SL 95.
+    const r = replayThirds(longInput([candle(T0 + H, 99, 93)], zone));
+    expect(r.verdict).toBe("INVALIDATED");
+    expect(r.ambiguous).toBe(true);
+  });
+
+  it("MARKET signals activate at the signal bar (identical numbers to legacy)", () => {
+    const legacy = replayThirds(longInput([candle(T0 + H, 106, 101), candle(T0 + 2 * H, 111, 106), candle(T0 + 3 * H, 116, 111)]));
+    const market = replayThirds(
+      longInput([candle(T0 + H, 106, 101), candle(T0 + 2 * H, 111, 106), candle(T0 + 3 * H, 116, 111)], { entryLow: 98, entryHigh: 100, immediate: true }),
+    );
+    expect(market.activated).toBe(true);
+    expect(market.activationTs).toBe(T0);
+    expect(market.realizedR).toBe(legacy.realizedR);
+    expect(market.verdict).toBe(legacy.verdict);
+  });
+});
+
+describe("ambiguity detection and finer-TF resolution", () => {
+  it("detects zone overlap both directions", () => {
+    expect(zoneIntersects(99, 101, 98, 100)).toBe(true); // LONG pullback
+    expect(zoneIntersects(103, 104, 98, 100)).toBe(false); // above, untouched
+    expect(zoneIntersects(96, 97, 98, 100)).toBe(false); // below, untouched
+  });
+
+  it("orders touches from finer candles (TP-first resolves cleanly)", () => {
+    const m5 = (ts: number, high: number, low: number) => candle(ts, high, low);
+    const barOpen = T0;
+    const finer = [m5(T0, 102, 101), m5(T0 + 300_000, 107, 106), m5(T0 + 600_000, 96, 94)];
+    // TP touched in the second 5m bar, stop only in the third → TARGET first.
+    expect(orderBarTouches({ finer, isLong: true, stop: 95, target: 105, barOpen, barClose: T0 + 900_000 })).toBe("TARGET");
+    // Stop first ordering.
+    const finer2 = [m5(T0, 102, 101), m5(T0 + 300_000, 96, 94)];
+    expect(orderBarTouches({ finer: finer2, isLong: true, stop: 95, target: 105, barOpen, barClose: T0 + 900_000 })).toBe("STOP");
+    // Same finer bar touches both → still ambiguous.
+    const finer3 = [m5(T0, 107, 94)];
+    expect(orderBarTouches({ finer: finer3, isLong: true, stop: 95, target: 105, barOpen, barClose: T0 + 900_000 })).toBeNull();
+    // Out-of-span finer bars are ignored.
+    const finer4 = [m5(T0 + 900_000, 107, 106)];
+    expect(orderBarTouches({ finer: finer4, isLong: true, stop: 95, target: 105, barOpen, barClose: T0 + 900_000 })).toBeNull();
+  });
+
+  it("replay consumes finer evidence to clear ambiguity", () => {
+    const coarse = [candle(T0 + H, 106, 94)]; // touches TP1 105 and SL 95
+    const plain = replayThirds(longInput(coarse));
+    expect(plain.ambiguous).toBe(true);
+    const finer = [candle(T0, 102, 101), candle(T0 + 300_000, 107, 106), candle(T0 + 600_000, 96, 94)];
+    const resolved = replayThirds(longInput(coarse, { finer }));
+    expect(resolved.ambiguous).toBe(false);
+    expect(resolved.decidedBy).toBe("TP1");
+    expect(resolved.verdict).toBe("OPEN"); // TP1 exited, thirds remain, data ends
   });
 });

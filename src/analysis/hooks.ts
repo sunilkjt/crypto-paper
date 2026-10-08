@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Candle, Timeframe } from "../market/hyperliquid/types";
 import { getCachedCandles } from "../market/hyperliquid";
-import { getCandleWindow } from "../market/hyperliquid/timeframes";
+import { getCandleWindow, getClosedCandles } from "../market/hyperliquid/timeframes";
 import { buildSignal, isListableBounce, type Signal } from "./signal";
 
 /**
@@ -80,7 +80,13 @@ export function useSignal(
   return useMemo(() => {
     if (!mtf[setupTimeframe] || mtf[setupTimeframe].length === 0) return null;
     try {
-      return buildSignal({ symbol: symbol.toUpperCase(), setupTimeframe, candlesByTf: mtf }).signal;
+      // Closed candles only (charts may show the forming bar; the engine never scores it).
+      const asOf = Date.now();
+      const closed: Partial<Record<Timeframe, Candle[]>> = {};
+      for (const tf of ["4h", "1h", "15m", "5m"] as Timeframe[]) {
+        if (mtf[tf]) closed[tf] = getClosedCandles(mtf[tf] as Candle[], tf, asOf);
+      }
+      return buildSignal({ symbol: symbol.toUpperCase(), setupTimeframe, candlesByTf: closed }).signal;
     } catch {
       return null;
     }
@@ -126,13 +132,15 @@ export function useSignalBatch(symbols: string[], setupTimeframe: Timeframe = "1
     const tfs: Timeframe[] = ["4h", "1h", "15m", "5m"];
     boundedAll(
       list.map((symbol) => async () => {
+        const fetchedAt = Date.now();
         const data: Partial<Record<Timeframe, Candle[]>> = {};
         try {
           const rows = await boundedAll(
             tfs.map((tf) => async () => {
-              const w = getCandleWindow(tf, Date.now(), 300);
+              const w = getCandleWindow(tf, fetchedAt, 300);
               const res = await getCachedCandles(symbol, tf, w.startTime, w.endTime);
-              return { tf, candles: res.candles };
+              // Closed candles only (see useSignal).
+              return { tf, candles: getClosedCandles(res.candles, tf, fetchedAt) };
             }),
             2,
           );

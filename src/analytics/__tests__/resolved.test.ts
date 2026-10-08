@@ -18,6 +18,9 @@ function row(over: Record<string, unknown> = {}) {
     exit_price: null,
     realized_r: null,
     decided_by: null,
+    activation_price: null,
+    activation_at: null,
+    ambiguous: null,
     ...over,
   };
 }

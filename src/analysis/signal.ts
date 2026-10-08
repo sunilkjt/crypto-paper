@@ -27,6 +27,7 @@ import {
   type StrengthClass,
 } from "./scoring";
 import { buildTradePlan } from "./tradeplan";
+import { timeframeToMs } from "../market/hyperliquid/timeframes";
 import { MAX_EXTENSION_ATR, MAX_RISK_ATR, MIN_RISK_REWARD } from "../signals/quality";
 
 /**
@@ -39,6 +40,7 @@ import { MAX_EXTENSION_ATR, MAX_RISK_ATR, MIN_RISK_REWARD } from "../signals/qua
 
 export interface Signal {
   symbol: string;
+  /** Close time of the last CLOSED setup candle (never wall-clock, never a forming bar). */
   timestamp: number;
   timeframe: Timeframe;
   direction: Direction;
@@ -46,6 +48,14 @@ export interface Signal {
   classification: StrengthClass;
   entryLow: number | null;
   entryHigh: number | null;
+  /**
+   * MARKET when the signal-time price sits inside the entry zone (an
+   * immediately executable setup); RETEST when price must return to the
+   * zone first. Null when there is no plan (WAIT).
+   */
+  entryType: "MARKET" | "RETEST" | null;
+  /** READY (market entry) or WAIT_FOR_RETEST at generation time. */
+  entryStatus: "READY" | "WAIT_FOR_RETEST" | null;
   invalidation: number | null;
   tp1: number | null;
   tp2: number | null;
@@ -94,20 +104,21 @@ export const TREND_MIN_CANDLES = 200;
 export function buildSignal(input: BuildSignalInput): { status: SignalStatus; signal: Signal } {
   const { symbol, setupTimeframe } = input;
   const setup = input.candlesByTf[setupTimeframe] ?? [];
-  const now = Date.now();
   const dataTimestamp = setup.length > 0 ? setup[setup.length - 1].timestamp : 0;
 
   const insufficient = (warnings: string[]): { status: SignalStatus; signal: Signal } => ({
     status: "INSUFFICIENT_DATA",
     signal: {
       symbol,
-      timestamp: now,
+      timestamp: dataTimestamp,
       timeframe: setupTimeframe,
       direction: "WAIT",
       signalStrength: 0,
       classification: "WAIT",
       entryLow: null,
       entryHigh: null,
+      entryType: null,
+      entryStatus: null,
       invalidation: null,
       tp1: null,
       tp2: null,
@@ -374,13 +385,27 @@ export function buildSignal(input: BuildSignalInput): { status: SignalStatus; si
     status: "OK",
     signal: {
       symbol,
-      timestamp: now,
+      // Candle-close time of the generating bar (callers feed closed-only
+      // candles, so the last setup bar is closed by construction).
+      timestamp: setup.length > 0 ? setup[setup.length - 1].timestamp + timeframeToMs(setupTimeframe) : dataTimestamp,
       timeframe: setupTimeframe,
       direction,
       signalStrength: scored.score,
       classification: direction === "WAIT" ? "WAIT" : scored.classification,
       entryLow,
       entryHigh,
+      entryType:
+        direction === "WAIT" || entryLow === null || entryHigh === null
+          ? null
+          : price >= entryLow && price <= entryHigh
+            ? "MARKET"
+            : "RETEST",
+      entryStatus:
+        direction === "WAIT" || entryLow === null || entryHigh === null
+          ? null
+          : price >= entryLow && price <= entryHigh
+            ? "READY"
+            : "WAIT_FOR_RETEST",
       invalidation,
       tp1,
       tp2,

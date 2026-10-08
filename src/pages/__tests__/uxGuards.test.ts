@@ -135,17 +135,18 @@ describe("scanner health mapping (P0-5 / P1-1 / P1-10)", () => {
 });
 
 describe("signal timestamps use engine time, not render time (P1-2)", () => {
-  it("buildSignal stamps the actual signal time", () => {
-    const before = Date.now();
+  it("buildSignal stamps the generating bar's close (closed-candle rule)", () => {
     const candles = candlesFromCloses(uptrend(260));
     const { signal } = buildSignal({
       symbol: "BTC",
       setupTimeframe: "15m",
       candlesByTf: { "15m": candles, "5m": candles, "1h": candles, "4h": candles },
     });
-    const after = Date.now();
-    expect(signal.timestamp).toBeGreaterThanOrEqual(before);
-    expect(signal.timestamp).toBeLessThanOrEqual(after);
+    const last = candles[candles.length - 1];
+    expect(signal.dataTimestamp).toBe(last.timestamp);
+    expect(signal.timestamp).toBe(last.timestamp + 15 * 60_000);
+    // Never wall-clock render time.
+    expect(Math.abs(signal.timestamp - Date.now())).toBeGreaterThan(60_000);
   });
 
   it("signal cards render the generated time", () => {

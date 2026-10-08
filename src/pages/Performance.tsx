@@ -277,9 +277,13 @@ export default function Performance() {
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             {[
               ["Total Signals", String(stats.total)],
+              ["Activated", String(stats.activated)],
               ["Wins", String(stats.wins)],
               ["Losses", String(stats.losses)],
               ["Breakeven", String(stats.breakeven)],
+              ["No Fill", String(stats.noFill)],
+              ["Invalidated", String(stats.invalidated)],
+              ["Ambiguous", String(stats.ambiguous)],
               ["Open", String(stats.open)],
               ["Expired", String(stats.expired)],
               ["Win Rate", `${stats.winRate.toFixed(1)}%`],
@@ -461,8 +465,9 @@ export default function Performance() {
           <Card className="mt-4">
             <CardHeader title="Methodology" subtitle="How every number above is produced" />
             <div className="space-y-2 px-5 py-4 text-xs leading-relaxed text-slate-400">
-              <p><span className="font-bold text-slate-200">Outcome.</span> Post-signal candles replay equal-thirds exits at TP1/TP2/TP3; on any bar the stop is processed before targets (same conservative rule as paper trading). Full stop → −1R; full TP1/TP2/TP3 cascade → +2R. |R| ≤ 0.1 → BREAKEVEN. Lifetime 24h → EXPIRED. Data ends first → OPEN. Unmeasurable plan or no data → UNKNOWN (never guessed).</p>
-              <p><span className="font-bold text-slate-200">Win Rate.</span> Wins / completed signals (WIN+LOSS+BREAKEVEN). OPEN/EXPIRED/UNKNOWN are excluded from rates, always counted separately.</p>
+              <p><span className="font-bold text-slate-200">Activation.</span> RETEST signals begin TP/SL monitoring only once a bar intersects the entry zone (activation at the entry-mid estimate — always labeled estimated, since OHLC cannot prove a fill). MARKET signals activate at the signal bar. A stop print before any zone touch is INVALIDATED (never a loss — no fill happened); a lifetime without a touch is NO_FILL. Rows written before entry tracking measure exactly as before (documented legacy rule, no retroactive change).</p>
+              <p><span className="font-bold text-slate-200">Outcome.</span> Post-activation candles replay equal-thirds exits at TP1/TP2/TP3; on any bar the stop is processed before targets (same conservative rule as paper trading). Full stop → −1R; full TP1/TP2/TP3 cascade → +2R. |R| ≤ 0.1 → BREAKEVEN. A bar touching both stop and target is resolved with finer-timeframe candles when available, otherwise kept as a conservative loss flagged ambiguous (counted separately, never hidden). Activated-but-open past 24h → EXPIRED. Data ends first → OPEN. Unmeasurable plan or no data → UNKNOWN (never guessed).</p>
+              <p><span className="font-bold text-slate-200">Win Rate.</span> Wins / completed activated trades (WIN+LOSS+BREAKEVEN). NO_FILL, INVALIDATED, OPEN, EXPIRED and UNKNOWN are excluded from rates, always counted separately.</p>
               <p><span className="font-bold text-slate-200">Average R.</span> Mean realized R across completed signals. <span className="font-bold text-slate-200">Expectancy.</span> Average R per completed signal (identical by definition).</p>
               <p><span className="font-bold text-slate-200">Profit Factor.</span> Gross positive R / absolute gross negative R (∞ with no losers, 0 with no winners).</p>
               <p><span className="font-bold text-slate-200">Cumulative R.</span> Running sum of realized R in outcome order.</p>

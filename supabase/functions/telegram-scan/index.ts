@@ -323,6 +323,14 @@ function getCandleWindow(tf, endTime = Date.now(), limit = 300) {
   const span = TIMEFRAME_MS[tf] * limit;
   return { startTime: endTime - span, endTime };
 }
+function isCandleClosed(openTime, tf, now = Date.now()) {
+  return Number.isFinite(openTime) && openTime + TIMEFRAME_MS[tf] <= now;
+}
+function getClosedCandles(candles, tf, now = Date.now()) {
+  let end = candles.length;
+  while (end > 0 && !isCandleClosed(candles[end - 1].timestamp, tf, now)) end -= 1;
+  return end === candles.length ? candles.slice() : candles.slice(0, end);
+}
 
 // src/market/hyperliquid/candles.ts
 function toFiniteNumber(value, field) {
@@ -1280,19 +1288,20 @@ var TREND_MIN_CANDLES = 200;
 function buildSignal(input) {
   const { symbol, setupTimeframe } = input;
   const setup = input.candlesByTf[setupTimeframe] ?? [];
-  const now = Date.now();
   const dataTimestamp = setup.length > 0 ? setup[setup.length - 1].timestamp : 0;
   const insufficient = (warnings2) => ({
     status: "INSUFFICIENT_DATA",
     signal: {
       symbol,
-      timestamp: now,
+      timestamp: dataTimestamp,
       timeframe: setupTimeframe,
       direction: "WAIT",
       signalStrength: 0,
       classification: "WAIT",
       entryLow: null,
       entryHigh: null,
+      entryType: null,
+      entryStatus: null,
       invalidation: null,
       tp1: null,
       tp2: null,
@@ -1500,13 +1509,17 @@ function buildSignal(input) {
     status: "OK",
     signal: {
       symbol,
-      timestamp: now,
+      // Candle-close time of the generating bar (callers feed closed-only
+      // candles, so the last setup bar is closed by construction).
+      timestamp: setup.length > 0 ? setup[setup.length - 1].timestamp + timeframeToMs(setupTimeframe) : dataTimestamp,
       timeframe: setupTimeframe,
       direction,
       signalStrength: scored.score,
       classification: direction === "WAIT" ? "WAIT" : scored.classification,
       entryLow,
       entryHigh,
+      entryType: direction === "WAIT" || entryLow === null || entryHigh === null ? null : price >= entryLow && price <= entryHigh ? "MARKET" : "RETEST",
+      entryStatus: direction === "WAIT" || entryLow === null || entryHigh === null ? null : price >= entryLow && price <= entryHigh ? "READY" : "WAIT_FOR_RETEST",
       invalidation,
       tp1,
       tp2,
@@ -1628,11 +1641,12 @@ async function runFullScan(markets, opts) {
         if (abort?.aborted) return;
         try {
           const data = {};
+          const asOf = Date.now();
           const rows = await boundedAll(
             SCAN_TIMEFRAMES.map((tf) => async () => {
-              const w = getCandleWindow(tf, Date.now(), 300);
+              const w = getCandleWindow(tf, asOf, 300);
               const res = await getCachedCandles(market.symbol, tf, w.startTime, w.endTime);
-              return { tf, candles: res.candles };
+              return { tf, candles: getClosedCandles(res.candles, tf, asOf) };
             }),
             2
           );
@@ -1941,7 +1955,8 @@ async function runManualMarketScan(deps, req) {
     totalLongs: all.filter((r) => r.signal.direction === "LONG").length,
     totalShorts: all.filter((r) => r.signal.direction === "SHORT").length,
     failures: aborted ? [...failures, "scan deadline reached \u2014 showing completed categories"] : failures,
-    partial: failures.length > 0 || aborted
+    partial: failures.length > 0 || aborted,
+    marks: Object.fromEntries(markets.map((m) => [m.symbol, m.markPrice]))
   };
 }
 async function verifyScanAccess(lookup, chatId) {
@@ -1961,15 +1976,22 @@ function fmtTimeUTC(ms) {
 function catTitle(c) {
   return c === "crypto" ? "CRYPTO" : c === "stocks" ? "STOCKS" : "COMMODITIES";
 }
-function formatCandidate(r) {
+function formatCandidate(r, current) {
   const s = r.signal;
   const emoji = s.direction === "LONG" ? "\u{1F7E2}" : "\u{1F534}";
   const entry = s.entryLow !== null && s.entryHigh !== null ? `${fmtMoney(s.entryLow)} \u2013 ${fmtMoney(s.entryHigh)}` : fmtMoney(s.entryLow);
   const reasons = s.reasons.length > 0 ? s.reasons.slice(0, 4) : ["(engine gave no detailed reasons)"];
+  const entryState = s.entryType === null || s.entryStatus === null ? [] : [
+    "",
+    `Current: ${fmtMoney(current)}`,
+    `Entry type: ${s.entryType}`,
+    `Status: ${s.entryStatus === "READY" ? "READY" : "WAIT FOR RETEST"}`
+  ];
   return [
     `${emoji} ${s.direction} \u2014 ${r.symbol}`,
     `Score: ${s.signalStrength}/100`,
     `Entry: ${entry}`,
+    ...entryState,
     `SL: ${fmtMoney(s.invalidation)}`,
     `TP1: ${fmtMoney(s.tp1)}`,
     `TP2: ${fmtMoney(s.tp2)}`,
@@ -2009,7 +2031,7 @@ function formatManualScanResult(res) {
     return lines.join("\n");
   }
   for (const r of res.candidates) {
-    lines.push("", "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501", "", ...formatCandidate(r));
+    lines.push("", "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501", "", ...formatCandidate(r, res.marks[r.symbol] ?? null));
   }
   if (res.watch.length > 0) {
     lines.push("", "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501", "", "\u23F3 WATCH", "");

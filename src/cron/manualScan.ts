@@ -122,6 +122,8 @@ export interface ManualScanResult {
   failures: string[];
   /** True when some category failed but others produced real results. */
   partial: boolean;
+  /** Mark prices captured at discovery (symbol → mark, null when unknown). */
+  marks: Record<string, number | null>;
 }
 
 export class ManualScanError extends Error {
@@ -231,6 +233,7 @@ export async function runManualMarketScan(
     totalShorts: all.filter((r) => r.signal.direction === "SHORT").length,
     failures: aborted ? [...failures, "scan deadline reached — showing completed categories"] : failures,
     partial: failures.length > 0 || aborted,
+    marks: Object.fromEntries(markets.map((m) => [m.symbol, m.markPrice])),
   };
 }
 
@@ -261,7 +264,7 @@ function catTitle(c: MarketCategory): string {
   return c === "crypto" ? "CRYPTO" : c === "stocks" ? "STOCKS" : "COMMODITIES";
 }
 
-function formatCandidate(r: ScannedCoin): string[] {
+function formatCandidate(r: ScannedCoin, current: number | null): string[] {
   const s = r.signal;
   const emoji = s.direction === "LONG" ? "🟢" : "🔴";
   const entry =
@@ -269,10 +272,20 @@ function formatCandidate(r: ScannedCoin): string[] {
       ? `${fmtMoney(s.entryLow)} – ${fmtMoney(s.entryHigh)}`
       : fmtMoney(s.entryLow);
   const reasons = s.reasons.length > 0 ? s.reasons.slice(0, 4) : ["(engine gave no detailed reasons)"];
+  const entryState =
+    s.entryType === null || s.entryStatus === null
+      ? []
+      : [
+          "",
+          `Current: ${fmtMoney(current)}`,
+          `Entry type: ${s.entryType}`,
+          `Status: ${s.entryStatus === "READY" ? "READY" : "WAIT FOR RETEST"}`,
+        ];
   return [
     `${emoji} ${s.direction} — ${r.symbol}`,
     `Score: ${s.signalStrength}/100`,
     `Entry: ${entry}`,
+    ...entryState,
     `SL: ${fmtMoney(s.invalidation)}`,
     `TP1: ${fmtMoney(s.tp1)}`,
     `TP2: ${fmtMoney(s.tp2)}`,
@@ -318,7 +331,7 @@ export function formatManualScanResult(res: ManualScanResult): string {
   }
 
   for (const r of res.candidates) {
-    lines.push("", "━━━━━━━━━━━━━━", "", ...formatCandidate(r));
+    lines.push("", "━━━━━━━━━━━━━━", "", ...formatCandidate(r, res.marks[r.symbol] ?? null));
   }
 
   if (res.watch.length > 0) {

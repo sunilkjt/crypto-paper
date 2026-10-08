@@ -23,6 +23,8 @@ export interface HistoryRow {
   risk_reward: number | null;
   setup_type: string | null;
   quality: string | null;
+  /** Engine entry type for activation-gated analytics (null = WAIT/legacy). */
+  entry_type: "MARKET" | "RETEST" | null;
   status: string;
   first_seen: string;
   last_seen: string;

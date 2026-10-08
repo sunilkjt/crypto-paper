@@ -29,6 +29,7 @@ function row(): HistoryRow {
     risk_reward: 2,
     setup_type: "TREND",
     quality: "MEDIUM QUALITY",
+    entry_type: "MARKET",
     status: "NEW",
     first_seen: new Date(1000).toISOString(),
     last_seen: new Date(2000).toISOString(),

@@ -36,7 +36,7 @@ import {
 } from "../signals/journal";
 import { trackOutcome } from "../signals/outcomes";
 import { getCachedCandles } from "../market/hyperliquid";
-import { getCandleWindow } from "../market/hyperliquid/timeframes";
+import { getCandleWindow, getClosedCandles } from "../market/hyperliquid/timeframes";
 import type { Timeframe } from "../market/hyperliquid/types";
 import { cn } from "../lib/cn";
 
@@ -145,7 +145,9 @@ export default function History() {
             const tf = (["5m", "15m", "1h", "4h"].includes(e.timeframe) ? e.timeframe : "15m") as Timeframe;
             const w = getCandleWindow(tf, Date.now(), 300);
             const res = await getCachedCandles(e.symbol, tf, w.startTime, w.endTime);
-            const follow = res.candles.filter((c) => c.timestamp > e.dataTimestamp);
+            // Closed candles only (same rule as the engine): a forming wick
+            // must not paint a touch that later disappears.
+            const follow = getClosedCandles(res.candles, tf).filter((c) => c.timestamp > e.dataTimestamp);
             if (follow.length === 0 || e.entryLow === null || e.entryHigh === null) return;
             const entryMid = (e.entryLow + e.entryHigh) / 2;
             const risk = e.direction === "LONG" ? entryMid - (e.invalidation ?? entryMid) : (e.invalidation ?? entryMid) - entryMid;

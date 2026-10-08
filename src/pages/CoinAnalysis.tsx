@@ -791,6 +791,23 @@ export default function CoinAnalysis() {
                 <p className="text-xs font-bold tracking-widest text-slate-500 uppercase">Trade Plan</p>
                 <TakePaperTrade signal={signal} coin={coin} mark={market?.markPrice ?? null} />
               </div>
+              {signal.entryType !== null && signal.entryStatus !== null && (
+                <p className="mt-2 rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
+                  Entry type:{" "}
+                  <span className={cn("font-bold", signal.entryType === "MARKET" ? "text-emerald-300" : "text-amber-300")}>
+                    {signal.entryType}
+                  </span>{" "}
+                  · Status:{" "}
+                  <span className="font-bold text-slate-100">
+                    {signal.entryStatus === "READY" ? "READY" : "WAIT FOR RETEST"}
+                  </span>
+                  <span className="text-slate-500">
+                    {signal.entryType === "MARKET"
+                      ? " — price is inside the zone (immediately executable)"
+                      : " — price must return to the zone first (not an immediate order)"}
+                  </span>
+                </p>
+              )}
               <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[13px] sm:grid-cols-4">
                 {[
                   ["Entry", signal.entryLow !== null ? `${fmt(signal.entryLow)} – ${fmt(signal.entryHigh)}` : "—"],

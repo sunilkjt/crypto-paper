@@ -45,6 +45,22 @@ beforeEach(() => {
       full = { "15m": c, "5m": plain.slice(-120), "1h": plain, "4h": plain };
     } else if (s === "OP") {
       full = { "15m": candlesFromCloses(uptrend(50)) } as Record<string, unknown[]>;
+    } else if (s === "FORM") {
+      // Uptrend history plus one hostile still-forming 15m bar stamped now:
+      // the engine must score the last CLOSED bar, never the forming one.
+      const base = trendCandles("up");
+      const last = base[base.length - 1];
+      const formingOpen = Math.floor(Date.now() / (15 * 60_000)) * (15 * 60_000);
+      const spike = {
+        timestamp: formingOpen,
+        open: last.close,
+        high: last.close * 1.02,
+        low: last.close * 0.5,
+        close: last.close * 0.62,
+        volume: last.volume * 9,
+      };
+      const withForming = [...base, spike];
+      full = { "15m": withForming, "5m": withForming.slice(-120), "1h": withForming, "4h": withForming };
     } else {
       const c = candlesFromCloses(sideways());
       full = { "15m": c, "5m": c.slice(-120), "1h": c, "4h": c };
@@ -115,6 +131,22 @@ describe("runFullScan", () => {
       onProgress: (done, total) => seen.push([done, total]),
     });
     expect(seen[seen.length - 1]).toEqual([2, 2]);
+  });
+
+  it("never scores the still-forming trailing bar", async () => {
+    const summary = await runFullScan([market("FORM", 100_000_000)], {
+      eligibility: { minVolumeNotional: 250_000, universeSize: 10 },
+      setupTimeframe: "15m",
+      concurrency: 1,
+    });
+    const form = summary.results.find((r) => r.symbol === "FORM");
+    expect(form).toBeDefined();
+    // Anchored on the last CLOSED bar: dataTimestamp predates the forming
+    // bar's open, and the signal timestamp is that bar's close.
+    const formingOpen = Math.floor(Date.now() / (15 * 60_000)) * (15 * 60_000);
+    expect(form?.signal.dataTimestamp).toBeLessThan(formingOpen);
+    expect(form?.signal.timestamp).toBe((form?.signal.dataTimestamp ?? 0) + 15 * 60_000);
+    expect(form?.id).toContain(`|${form?.signal.dataTimestamp}`);
   });
 });
 

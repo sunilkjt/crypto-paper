@@ -183,3 +183,40 @@ describe("signal end-to-end", () => {
     expect(yesBounce.bounceReasons.length).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe("signal realism (closed-candle timestamps + entry state)", () => {
+  it("stamps the generating bar's close time, never wall-clock", () => {
+    const set = tfStair("up")["15m"];
+    const last = set[set.length - 1];
+    const { signal } = buildSignal({ symbol: "TEST", setupTimeframe: "15m", candlesByTf: tfStair("up") });
+    expect(signal.dataTimestamp).toBe(last.timestamp);
+    expect(signal.timestamp).toBe(last.timestamp + 15 * 60_000);
+  });
+
+  it("labels entry state consistently (MARKET/READY vs RETEST/WAIT vs null)", () => {
+    for (const dir of ["up", "down"] as const) {
+      const { signal } = buildSignal({ symbol: "TEST", setupTimeframe: "15m", candlesByTf: tfStair(dir) });
+      if (signal.direction === "WAIT" || signal.entryLow === null || signal.entryHigh === null) {
+        expect(signal.entryType).toBeNull();
+        expect(signal.entryStatus).toBeNull();
+      } else {
+        expect(["MARKET", "RETEST"]).toContain(signal.entryType);
+        expect(signal.entryStatus).toBe(signal.entryType === "MARKET" ? "READY" : "WAIT_FOR_RETEST");
+      }
+    }
+    const { signal: wait } = buildSignal({ symbol: "TEST", setupTimeframe: "15m", candlesByTf: tf(sideways()) });
+    expect(wait.direction).toBe("WAIT");
+    expect(wait.entryType).toBeNull();
+    expect(wait.entryStatus).toBeNull();
+  });
+
+  it("marks insufficient-data signals without invented timestamps", () => {
+    const { signal } = buildSignal({
+      symbol: "TEST",
+      setupTimeframe: "15m",
+      candlesByTf: { "15m": candlesFromCloses(uptrend(50)) },
+    });
+    expect(signal.direction).toBe("WAIT");
+    expect(signal.timestamp).toBe(signal.dataTimestamp);
+  });
+});

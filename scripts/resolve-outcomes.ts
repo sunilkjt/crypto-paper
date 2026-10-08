@@ -18,7 +18,7 @@
  */
 
 import { getCachedCandles } from "../src/market/hyperliquid/index.js";
-import type { Timeframe } from "../src/market/hyperliquid/types.js";
+import { getClosedCandles } from "../src/market/hyperliquid/timeframes.js";import type { Timeframe } from "../src/market/hyperliquid/types.js";
 import { alreadyResolved, decideRowAction, planOf } from "../src/analytics/resolve.js";
 import { createSupabaseStateStore } from "../src/cron/state.js";
 
@@ -33,6 +33,8 @@ function required(name: string): string {
 
 const SUPPORTED_TF = new Set(["5m", "15m", "1h", "4h"]);
 
+/** Setup TF → finer TF for ordering same-bar stop/target touches. */
+const FINER_TF: Record<string, Timeframe> = { "15m": "5m", "1h": "15m", "4h": "1h", "5m": "1m" };
 interface UnresolvedRow {
   id: string;
   symbol: string;
@@ -40,6 +42,7 @@ interface UnresolvedRow {
   timeframe: string;
   entry_low: number | null;
   entry_high: number | null;
+  entry_type: string | null;
   invalidation: number | null;
   tp1: number | null;
   tp2: number | null;
@@ -96,7 +99,7 @@ async function main(): Promise<void> {
   let rows: UnresolvedRow[];
   try {
     const res = await fetch(
-      `${supabaseUrl}/rest/v1/signal_history?outcome=is.null&select=id,symbol,direction,timeframe,entry_low,entry_high,invalidation,tp1,tp2,tp3,first_seen&order=first_seen.asc&limit=${limit}`,
+      `${supabaseUrl}/rest/v1/signal_history?outcome=is.null&select=id,symbol,direction,timeframe,entry_low,entry_high,entry_type,invalidation,tp1,tp2,tp3,first_seen&order=first_seen.asc&limit=${limit}`,
       { headers, signal: AbortSignal.timeout(30_000) },
     );
     if (!res.ok) {
@@ -174,7 +177,13 @@ async function main(): Promise<void> {
         let candles: Awaited<ReturnType<typeof getCachedCandles>>["candles"] = [];
         try {
           const res = await getCachedCandles(row.symbol, tf, plan.firstSeen, end);
-          candles = res.candles.filter((c) => c.timestamp > plan.firstSeen);
+          // Closed candles only at the live edge: a forming wick must never
+          // mint a permanent terminal verdict (verdicts are immutable).
+          candles = getClosedCandles(
+            res.candles.filter((c) => c.timestamp > plan.firstSeen),
+            tf,
+            now,
+          );
         } catch {
           candles = [];
         }
@@ -184,7 +193,31 @@ async function main(): Promise<void> {
           skippedOpen += 1; // transient — retry next run
           return;
         }
-        if (await patch(row.id, decision.patch)) {
+        // Second pass: an ambiguous same-bar conflict gets one bounded
+        // finer-TF lookup to establish the true touch order (genuinely
+        // available Hyperliquid data — never fabricated intrabar order).
+        let finalPatch = decision.patch;
+        if (decision.ambiguousBar) {
+          const finerTf = FINER_TF[row.timeframe] ?? null;
+          if (finerTf) {
+            try {
+              const span = decision.ambiguousBar;
+              const fres = await getCachedCandles(row.symbol, finerTf, span.barOpen, span.barClose);
+              const finer = getClosedCandles(
+                fres.candles.filter((c) => c.timestamp >= span.barOpen && c.timestamp < span.barClose),
+                finerTf,
+                now,
+              );
+              if (finer.length > 0) {
+                const retry = decideRowAction(plan, candles, now, lifetimeMs, finer);
+                if (retry.action === "resolve") finalPatch = retry.patch;
+              }
+            } catch {
+              // Finer data unavailable — keep the conservative flagged result.
+            }
+          }
+        }
+        if (await patch(row.id, finalPatch)) {
           resolved += 1;
         } else {
           failed += 1;

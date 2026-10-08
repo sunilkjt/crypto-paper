@@ -263,6 +263,9 @@ export async function runOnce(settings: CronSettings, deps: RunnerDeps): Promise
           risk_reward: r.signal.riskReward,
           setup_type: r.setupType,
           quality: r.quality,
+          // Entry type rides along for activation-gated analytics (null for
+          // WAIT, which is never written). Formulas untouched.
+          entry_type: r.signal.entryType,
           status: entry?.status ?? lifecycleById.get(r.id) ?? "NEW",
           first_seen: new Date(entry?.firstSeen ?? now).toISOString(),
           last_seen: new Date(now).toISOString(),

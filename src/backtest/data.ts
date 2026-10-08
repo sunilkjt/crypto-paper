@@ -1,6 +1,6 @@
 import type { Candle, Timeframe } from "../market/hyperliquid/types";
 import { coinForRequest, getCandles } from "../market/hyperliquid/candles";
-import { timeframeToMs } from "../market/hyperliquid/timeframes";
+import { getClosedCandles, timeframeToMs } from "../market/hyperliquid/timeframes";
 import { postInfoWithRetry } from "../market/hyperliquid/client";
 import { HyperliquidError } from "../market/hyperliquid/types";
 import type { HistoricalSet } from "./types";
@@ -60,7 +60,9 @@ export async function fetchHistoricalCandles(
     }
   }
   out.sort((a, b) => a.timestamp - b.timestamp);
-  return out;
+  // Drop a trailing still-forming bar at the live edge (no-op for fully
+  // historical ranges): replays must prefix strictly closed history.
+  return getClosedCandles(out, timeframe);
 }
 
 interface RawFunding {

@@ -13,6 +13,8 @@ function baseSignal(): Signal {
     classification: "SETUP",
     entryLow: 1.4,
     entryHigh: 1.45,
+    entryType: "MARKET",
+    entryStatus: "READY",
     invalidation: 1.32,
     tp1: 1.55,
     tp2: 1.65,

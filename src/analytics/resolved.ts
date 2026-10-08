@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { MarketCategory } from "../market/classify";
 import type { ResolvedSignal, SignalVerdict } from "./performance";
 
-const VERDICTS: SignalVerdict[] = ["WIN", "LOSS", "BREAKEVEN", "EXPIRED", "OPEN", "UNKNOWN"];
+const VERDICTS: SignalVerdict[] = ["WIN", "LOSS", "BREAKEVEN", "EXPIRED", "OPEN", "UNKNOWN", "NO_FILL", "INVALIDATED"];
 
 interface ResolvedRow {
   id: unknown;
@@ -19,6 +19,9 @@ interface ResolvedRow {
   exit_price: unknown;
   realized_r: unknown;
   decided_by: unknown;
+  activation_price: unknown;
+  activation_at: unknown;
+  ambiguous: unknown;
 }
 
 function numOrNull(v: unknown): number | null {
@@ -68,6 +71,9 @@ export function mapResolvedRow(row: ResolvedRow): ResolvedSignal | null {
     exitPrice: numOrNull(row.exit_price),
     outcomeAt: msOrNull(row.outcome_at),
     decidedBy: pending ? "PENDING — awaiting resolution" : typeof row.decided_by === "string" ? row.decided_by : "",
+    activationPrice: numOrNull(row.activation_price),
+    activationTs: msOrNull(row.activation_at),
+    ambiguous: row.ambiguous === true,
   };
 }
 

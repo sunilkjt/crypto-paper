@@ -1,6 +1,6 @@
 import type { Candle, Market, Timeframe } from "../market/hyperliquid/types";
 import { getCachedCandles } from "../market/hyperliquid";
-import { getCandleWindow } from "../market/hyperliquid/timeframes";
+import { getCandleWindow, getClosedCandles } from "../market/hyperliquid/timeframes";
 import { buildSignal, SETUP_MIN_CANDLES, type Signal } from "../analysis/signal";
 import { assessQuality, type SignalQuality } from "../signals/quality";
 import { classifySetupType, signalIdFor, type SetupType } from "../signals/setupType";
@@ -99,11 +99,14 @@ export async function runFullScan(
         if (abort?.aborted) return;
         try {
           const data: Partial<Record<Timeframe, Candle[]>> = {};
+          // Closed candles only: the trailing still-forming bar is never
+          // scored (indicators, MTF and timestamps all derive from closes).
+          const asOf = Date.now();
           const rows = await boundedAll(
             SCAN_TIMEFRAMES.map((tf) => async () => {
-              const w = getCandleWindow(tf, Date.now(), 300);
+              const w = getCandleWindow(tf, asOf, 300);
               const res = await getCachedCandles(market.symbol, tf, w.startTime, w.endTime);
-              return { tf, candles: res.candles };
+              return { tf, candles: getClosedCandles(res.candles, tf, asOf) };
             }),
             2,
           );
