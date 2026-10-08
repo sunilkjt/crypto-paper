@@ -262,4 +262,42 @@ describe("headless runner", () => {
     expect(h.saved?.lastRun?.delivered).toBe(0);
     expect(h.saved?.lastRun?.lastDeliveryAt).toBe(5_000_000);
   });
+
+  it("saves the heartbeat even when every category scan fails", async () => {
+    const h = harness();
+    h.failOn.add("crypto");
+    h.failOn.add("stocks");
+    h.failOn.add("commodities");
+    const s = baseSettings();
+    s.categories = ["crypto", "stocks", "commodities"];
+    await runOnce(s, deps(h, 7_000_000));
+    // Failures are recorded per category, but the heartbeat still proves
+    // the run happened (dashboard can tell failed-run from missing-run).
+    expect(h.saved?.lastRun?.at).toBe(7_000_000);
+    expect(h.saved?.lastRun?.perCategory.crypto).toMatchObject({ scanned: 0, signals: 0 });
+  });
+
+  it("saves the heartbeat even when history persistence fails", async () => {
+    const h = harness();
+    h.summaries.crypto = summaryFor([coin("BTC", "LONG", 84)]);
+    const d = deps(h, 8_000_000);
+    const failingHistory = {
+      ...d,
+      saveHistory: async (): Promise<void> => {
+        throw new Error("db down");
+      },
+    };
+    await runOnce(baseSettings(), failingHistory);
+    expect(h.saved?.lastRun?.at).toBe(8_000_000);
+  });
+
+  it("saves the heartbeat with zero configured categories", async () => {
+    const h = harness();
+    const s = baseSettings();
+    s.categories = [];
+    const res = await runOnce(s, deps(h, 9_000_000));
+    expect(res.categories).toEqual([]);
+    expect(h.saved?.lastRun?.at).toBe(9_000_000);
+    expect(h.saved?.lastRun?.perCategory).toEqual({});
+  });
 });

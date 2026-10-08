@@ -186,6 +186,20 @@ describe("detectInfraProblems", () => {
     const stale = detectInfraProblems({ ...healthy, recentSignals: 2, priorSignals: 20, cronLastRunAt: now - 90 * 60_000 });
     expect(stale.map((a) => a.code)).not.toContain("VOLUME_DROP");
   });
+
+  it("reports CRON_MISSING and RESOLVER_MISSING distinctly from delayed", () => {
+    // Null heartbeat (no row ever written) is MISSING, not merely delayed.
+    const missing = detectInfraProblems({ ...healthy, cronLastRunAt: null, resolverAt: null });
+    const codes = missing.map((a) => a.code);
+    expect(codes).toContain("CRON_MISSING");
+    expect(codes).toContain("RESOLVER_MISSING");
+    expect(codes).not.toContain("CRON_DELAYED");
+    expect(codes).not.toContain("CRON_STALE");
+    expect(codes).not.toContain("RESOLVER_DELAYED");
+    expect(codes).not.toContain("RESOLVER_STALE");
+    expect(missing.find((a) => a.code === "CRON_MISSING")?.severity).toBe("WARNING");
+    expect(missing.find((a) => a.code === "RESOLVER_MISSING")?.severity).toBe("WARNING");
+  });
 });
 
 describe("classifyQualityStatus", () => {

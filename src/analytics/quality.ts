@@ -307,7 +307,7 @@ export function detectInfraProblems(input: InfraInput): QualityAlert[] {
     out.push({
       severity: "WARNING",
       domain: "CRON",
-      code: "CRON_NEVER_REPORTED",
+      code: "CRON_MISSING",
       message: "The 24/7 scanner has never reported a heartbeat.",
       evidence: "scanner_state has no cron-monitor row",
     });
@@ -333,7 +333,7 @@ export function detectInfraProblems(input: InfraInput): QualityAlert[] {
     out.push({
       severity: "WARNING",
       domain: "RESOLVER",
-      code: "RESOLVER_NEVER_REPORTED",
+      code: "RESOLVER_MISSING",
       message: "The outcome resolver has never reported a heartbeat.",
       evidence: "scanner_state has no resolve-outcomes row",
     });

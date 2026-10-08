@@ -18,9 +18,10 @@
  */
 
 import { getCachedCandles } from "../src/market/hyperliquid/index.js";
-import { getClosedCandles } from "../src/market/hyperliquid/timeframes.js";import type { Timeframe } from "../src/market/hyperliquid/types.js";
-import { alreadyResolved, decideRowAction, planOf } from "../src/analytics/resolve.js";
 import { createSupabaseStateStore } from "../src/cron/state.js";
+import { normalizeTimeframe, runResolverJob, type ResolverHeartbeat } from "../src/cron/resolveJob.js";
+import type { ResolvePatch, UnresolvedRowLike } from "../src/analytics/resolve.js";
+import type { Timeframe } from "../src/market/hyperliquid/types.js";
 
 function required(name: string): string {
   const v = (process.env[name] ?? "").trim();
@@ -29,38 +30,6 @@ function required(name: string): string {
     process.exit(2);
   }
   return v;
-}
-
-const SUPPORTED_TF = new Set(["5m", "15m", "1h", "4h"]);
-
-/** Setup TF → finer TF for ordering same-bar stop/target touches. */
-const FINER_TF: Record<string, Timeframe> = { "15m": "5m", "1h": "15m", "4h": "1h", "5m": "1m" };
-interface UnresolvedRow {
-  id: string;
-  symbol: string;
-  direction: "LONG" | "SHORT";
-  timeframe: string;
-  entry_low: number | null;
-  entry_high: number | null;
-  entry_type: string | null;
-  invalidation: number | null;
-  tp1: number | null;
-  tp2: number | null;
-  tp3: number | null;
-  first_seen: string;
-}
-
-async function boundedAll<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
-  const out: T[] = new Array(tasks.length);
-  let next = 0;
-  async function worker(): Promise<void> {
-    while (next < tasks.length) {
-      const i = next++;
-      out[i] = await tasks[i]();
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, () => worker()));
-  return out;
 }
 
 async function main(): Promise<void> {
@@ -78,6 +47,8 @@ async function main(): Promise<void> {
   const now = Date.now();
 
   // Preflight: fail fast with a clear message when migration 0008 is missing.
+  // (A heartbeat attempt is still made below via the job only when listing
+  // succeeds; a preflight failure exits red and loud by design.)
   try {
     const probe = await fetch(
       `${supabaseUrl}/rest/v1/signal_history?select=id&outcome=is.null&limit=1`,
@@ -96,142 +67,46 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  let rows: UnresolvedRow[];
-  try {
-    const res = await fetch(
-      `${supabaseUrl}/rest/v1/signal_history?outcome=is.null&select=id,symbol,direction,timeframe,entry_low,entry_high,entry_type,invalidation,tp1,tp2,tp3,first_seen&order=first_seen.asc&limit=${limit}`,
-      { headers, signal: AbortSignal.timeout(30_000) },
-    );
-    if (!res.ok) {
-      console.error(`[resolve-outcomes] list failed (HTTP ${res.status}).`);
-      process.exit(1);
-    }
-    rows = (await res.json()) as UnresolvedRow[];
-  } catch (e) {
-    console.error(`[resolve-outcomes] list failed: ${e instanceof Error ? e.message : "unknown"}`);
+  const counts = await runResolverJob({
+    now,
+    lifetimeMs,
+    concurrency,
+    log,
+    listUnresolved: async (): Promise<UnresolvedRowLike[]> => {
+      const res = await fetch(
+        `${supabaseUrl}/rest/v1/signal_history?outcome=is.null&select=id,symbol,direction,timeframe,entry_low,entry_high,entry_type,invalidation,tp1,tp2,tp3,first_seen&order=first_seen.asc&limit=${limit}`,
+        { headers, signal: AbortSignal.timeout(30_000) },
+      );
+      if (!res.ok) throw new Error(`list failed (HTTP ${res.status})`);
+      return (await res.json()) as UnresolvedRowLike[];
+    },
+    fetchCandles: async (symbol: string, tf: Timeframe, from: number, to: number) => {
+      const res = await getCachedCandles(symbol, tf, from, to);
+      return res.candles;
+    },
+    patchRow: async (id: string, patch: ResolvePatch): Promise<boolean> => {
+      try {
+        const res = await fetch(`${supabaseUrl}/rest/v1/signal_history?id=eq.${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ ...patch, resolved_at: new Date().toISOString() }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    },
+    writeHeartbeat: async (hb: ResolverHeartbeat): Promise<void> => {
+      await store.saveValue("resolve-outcomes", hb);
+    },
+  });
+
+  if (!counts.ok) {
+    console.error("[resolve-outcomes] listing failed — see heartbeat error field");
     process.exit(1);
   }
-  if (rows.length === 0) {
-    log("nothing unresolved — done");
-  } else {
-    log(`${rows.length} unresolved rows`);
-  }
-
-  let resolved = 0;
-  let skippedOpen = 0;
-  let failed = 0;
-
-  // Heartbeat for /status + diagnostics. Separate scanner_state key —
-  // cron-monitor is never touched. Always written, even when there was
-  // nothing to resolve, so "never reported" unambiguously means the job
-  // has not run (not "ran with zero work"). Best-effort: a failed
-  // heartbeat never fails the run.
-  const writeHeartbeat = async (): Promise<void> => {
-    try {
-      const store = createSupabaseStateStore({ url: supabaseUrl, serviceKey });
-      await store.saveValue("resolve-outcomes", {
-        at: Date.now(),
-        checked: rows.length,
-        resolved,
-        skippedOpen,
-        failed,
-      });
-    } catch (e) {
-      log(`heartbeat skipped: ${e instanceof Error ? e.message : "unknown"}`);
-    }
-  };
-
-  const patch = async (id: string, body: Record<string, unknown>): Promise<boolean> => {
-    try {
-      const res = await fetch(`${supabaseUrl}/rest/v1/signal_history?id=eq.${encodeURIComponent(id)}`, {
-        method: "PATCH",
-        headers,
-        body: JSON.stringify({ ...body, resolved_at: new Date().toISOString() }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      return res.ok;
-    } catch {
-      return false;
-    }
-  };
-
-  await boundedAll(
-    rows.map((row) => async () => {
-      try {
-        // Belt-and-braces idempotency: the list query already filters
-        // outcome IS NULL, but a row resolved between listing and here
-        // must never be rewritten.
-        if (alreadyResolved((row as { outcome?: unknown }).outcome)) return;
-        const plan = planOf({ ...row, outcome: null });
-        if (plan === null) {
-          // Unmeasurable plan: terminal UNKNOWN (never retried forever).
-          if (await patch(row.id, { outcome: "UNKNOWN", outcome_at: null, exit_price: null, realized_r: null, decided_by: "UNKNOWN" })) {
-            resolved += 1;
-          } else {
-            failed += 1;
-          }
-          return;
-        }
-        const tf = (SUPPORTED_TF.has(row.timeframe) ? row.timeframe : "15m") as Timeframe;
-        const end = Math.min(plan.firstSeen + lifetimeMs, now);
-        let candles: Awaited<ReturnType<typeof getCachedCandles>>["candles"] = [];
-        try {
-          const res = await getCachedCandles(row.symbol, tf, plan.firstSeen, end);
-          // Closed candles only at the live edge: a forming wick must never
-          // mint a permanent terminal verdict (verdicts are immutable).
-          candles = getClosedCandles(
-            res.candles.filter((c) => c.timestamp > plan.firstSeen),
-            tf,
-            now,
-          );
-        } catch {
-          candles = [];
-        }
-        const decision = decideRowAction(plan, candles, now, lifetimeMs);
-        if (decision.action === "none") return;
-        if (decision.action === "skip") {
-          skippedOpen += 1; // transient — retry next run
-          return;
-        }
-        // Second pass: an ambiguous same-bar conflict gets one bounded
-        // finer-TF lookup to establish the true touch order (genuinely
-        // available Hyperliquid data — never fabricated intrabar order).
-        let finalPatch = decision.patch;
-        if (decision.ambiguousBar) {
-          const finerTf = FINER_TF[row.timeframe] ?? null;
-          if (finerTf) {
-            try {
-              const span = decision.ambiguousBar;
-              const fres = await getCachedCandles(row.symbol, finerTf, span.barOpen, span.barClose);
-              const finer = getClosedCandles(
-                fres.candles.filter((c) => c.timestamp >= span.barOpen && c.timestamp < span.barClose),
-                finerTf,
-                now,
-              );
-              if (finer.length > 0) {
-                const retry = decideRowAction(plan, candles, now, lifetimeMs, finer);
-                if (retry.action === "resolve") finalPatch = retry.patch;
-              }
-            } catch {
-              // Finer data unavailable — keep the conservative flagged result.
-            }
-          }
-        }
-        if (await patch(row.id, finalPatch)) {
-          resolved += 1;
-        } else {
-          failed += 1;
-        }
-      } catch {
-        failed += 1;
-      }
-    }),
-    concurrency,
-  );
-
-  log(`done: resolved=${resolved} open-skipped=${skippedOpen} failed=${failed}`);
-  await writeHeartbeat();
-  if (rows.length > 0 && resolved === 0 && failed === rows.length) {
+  if (counts.checked > 0 && counts.resolved === 0 && counts.failed === counts.checked) {
     console.error("[resolve-outcomes] every row failed");
     process.exit(1);
   }
