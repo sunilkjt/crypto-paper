@@ -90,7 +90,7 @@ jobs:
         run: |
           SIG=$(jq -r .signature reports/issue.json)
           TITLE=$(jq -r .title reports/issue.json)
-          if gh issue list --label signal-quality --state open --json title --jq -r '.[].title' | grep -qF "[$SIG]"; then
+          if gh issue list --label signal-quality --state open --json title --jq '.[].title' | grep -qF "[$SIG]"; then
             echo "Duplicate suppressed (open issue already tracks [$SIG])."
           else
             jq -r .body reports/issue.json > /tmp/issue-body.md
