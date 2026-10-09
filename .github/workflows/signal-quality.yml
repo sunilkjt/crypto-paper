@@ -90,7 +90,15 @@ jobs:
         run: |
           SIG=$(jq -r .signature reports/issue.json)
           TITLE=$(jq -r .title reports/issue.json)
-          if gh issue list --label signal-quality --state open --json title --jq '.[].title' | grep -qF "[$SIG]"; then
+          # A failed lookup is NOT proof of absence: abort creation loudly
+          # instead of manufacturing a duplicate.
+          TITLES_FILE=$(mktemp)
+          if ! gh issue list --label signal-quality --state open --json title --jq '.[].title' > "$TITLES_FILE" 2>/tmp/gh-lookup-err.txt; then
+            echo "Issue lookup failed — skipping creation (absence unproven):"
+            cat /tmp/gh-lookup-err.txt
+            exit 0
+          fi
+          if grep -qF "[$SIG]" "$TITLES_FILE"; then
             echo "Duplicate suppressed (open issue already tracks [$SIG])."
           else
             jq -r .body reports/issue.json > /tmp/issue-body.md
