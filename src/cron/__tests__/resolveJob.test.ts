@@ -3,6 +3,7 @@ import type { Candle, Timeframe } from "../../market/hyperliquid/types";
 import { runResolverJob, type ResolverHeartbeat } from "../resolveJob";
 import type { UnresolvedRowLike } from "../../analytics/resolve";
 import type { ResolvePatch } from "../../analytics/resolve";
+import scriptSrc from "../../../scripts/resolve-outcomes.ts?raw";
 
 const T0 = 1_700_000_000_000;
 const H = 3_600_000;
@@ -153,5 +154,14 @@ describe("runResolverJob heartbeat contract", () => {
     expect(counts).toMatchObject({ checked: 1, resolved: 1, failed: 0, ok: true });
     expect(f.patches[0].patch).toMatchObject({ outcome: "WIN" });
     expect(typeof f.patches[0].patch.decided_by).toBe("string");
+  });
+
+  it("wiring constructs its own state store (no dangling references)", () => {
+    // Regression guard: a refactor once removed the store construction
+    // while the heartbeat closure still referenced it, silently killing
+    // every heartbeat with a ReferenceError the linters never flagged
+    // (scripts/ are outside tsc). The store must be built where it is used.
+    expect(scriptSrc).toContain("createSupabaseStateStore({ url: supabaseUrl, serviceKey })");
+    expect(scriptSrc).toContain("runResolverJob({");
   });
 });

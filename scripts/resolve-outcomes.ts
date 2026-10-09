@@ -98,6 +98,8 @@ async function main(): Promise<void> {
       }
     },
     writeHeartbeat: async (hb: ResolverHeartbeat): Promise<void> => {
+      // Store is constructed per call (no shared mutable wiring to forget).
+      const store = createSupabaseStateStore({ url: supabaseUrl, serviceKey });
       await store.saveValue("resolve-outcomes", hb);
     },
   });
