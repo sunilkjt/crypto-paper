@@ -63,6 +63,8 @@ async function main(): Promise<void> {
     { name: "telegram-link", method: "POST", body: JSON.stringify({ action: "status" }), deployed: [401] },
     { name: "telegram-notify", method: "POST", body: JSON.stringify({}), deployed: [401] },
     { name: "telegram-webhook", method: "GET", deployed: [405] },
+    { name: "telegram-scan", method: "GET", deployed: [405] },
+    { name: "signal-scan", method: "GET", deployed: [405] },
     { name: "explain-signal", method: "POST", body: JSON.stringify({}), deployed: [400, 503] },
   ];
   for (const fn of fns) {

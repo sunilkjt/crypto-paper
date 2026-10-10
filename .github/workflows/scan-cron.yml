@@ -1,9 +1,16 @@
-# Headless paper-signal scanner (24/7 Telegram signals, laptop closed).
+# Headless paper-signal scanner — MANUAL FALLBACK ONLY.
 #
-# Every 5 minutes: scan crypto/stocks/commodities via the SAME deterministic
-# engine, evaluate lifecycle transitions against Supabase-persisted state,
-# and deliver new qualifying signals to linked Telegram chats. No browser,
-# no AI calls, no journal writes, no paper trades — notifications only.
+# The 24/7 trigger moved to Supabase pg_cron + pg_net invoking the
+# signal-scan edge function every 5 minutes (migration 0010; Supabase
+# infra, immune to GitHub schedule throttling and the 60-day auto-disable).
+# This workflow keeps the SAME deterministic engine as a manual fallback:
+# run it from Actions → "Paper signal cron" → Run workflow for backfills
+# or while the pg_cron job is paused. No browser, no AI calls, no journal
+# writes, no paper trades — notifications only.
+#
+# ONE-SCANNER RULE: never run this while pg_cron signal-scan-5min is
+# active (or with an open browser scanner) — the atomic claim gate would
+# suppress most duplicates, but two writers still churn state needlessly.
 #
 # Required repo secrets (Settings → Secrets → Actions — server-side only,
 # NEVER prefixed VITE_, NEVER baked into any frontend bundle):
@@ -12,15 +19,14 @@
 #   TELEGRAM_BOT_TOKEN        (same value as the Supabase secret)
 #
 # Tunables below (env): categories, minimum strength, cooldown, site URL.
-# Pause the schedule anytime: Actions → "Paper signal cron" → Disable.
-# One-scanner rule: pause this workflow while debugging with an open
-# browser scanner to avoid double delivery.
+# If this fallback itself keeps failing, check in order: missing secrets
+# (exit 2 = env absent), Supabase reachability/table migrations (the error
+# names the migration), Hyperliquid timeouts (transient — retry), and
+# Actions being disabled on a fork (Settings → Actions → Allow all).
 
 name: Paper signal cron
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
