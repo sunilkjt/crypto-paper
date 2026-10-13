@@ -39,4 +39,27 @@ describe("signal-quality runner safety", () => {
     expect(code).toMatch(/process\.exit\(1\)/);
     expect(code).toMatch(/process\.exit\(2\)/);
   });
+
+  it("requires every signal-history read (never treats a failed query as zero)", () => {
+    // Strict readers throw on non-200/206 or missing Content-Range; the
+    // runner must route EVERY count/row read through them.
+    expect(code).toMatch(/requireCount\(/);
+    expect(code).toMatch(/requireRows\(/);
+    expect(code).toMatch(/readCount/);
+    // The old silent-parser pattern (countOf + "?? 0") must never return.
+    expect(code).not.toMatch(/countOf/);
+    // No raw status gate may bypass the helpers (the 206 bug).
+    expect(code).not.toMatch(/\.status\s*!==\s*200/);
+    expect(code).not.toMatch(/\.status\s*===\s*200/);
+  });
+
+  it("logs the underlying database failure without secrets", () => {
+    expect(code).toMatch(/db-read FAILED/);
+    expect(code).toMatch(/db-read counts ok/);
+    expect(code).toMatch(/formatRestFailure/);
+    expect(code).toMatch(/formatNetworkFailure/);
+    // Diagnostic plumbing must not reference credential holders.
+    expect(code).not.toMatch(/console\.(log|error)\([^)]*serviceKey/);
+    expect(code).not.toMatch(/console\.(log|error)\([^)]*botToken/);
+  });
 });
