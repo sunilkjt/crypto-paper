@@ -30,6 +30,12 @@ import { listEnabledChats } from "../src/cron/chats.js";
 import { createTelegramSender } from "../src/cron/notify.js";
 import { mapResolvedRow, type ResolvedRow } from "../src/analytics/resolved.js";
 import {
+  formatNetworkFailure,
+  formatRestFailure,
+  requireCount,
+  requireRows,
+} from "../src/analytics/qualityRead.js";
+import {
   classifyQualityStatus,
   classifySample,
   computeExtendedMetrics,
@@ -91,10 +97,18 @@ async function rest(
   return { status: res.status, json, contentRange: res.headers.get("content-range") };
 }
 
-function countOf(range: string | null): number | null {
-  if (!range) return null;
-  const m = /\/(\d+)\s*$/.exec(range);
-  return m ? Number.parseInt(m[1], 10) : null;
+/**
+ * Log-safe failure detail for one REST snapshot. The returned string
+ * carries HTTP status + PostgREST code/message/hint + operation + query
+ * path. It never carries headers, API keys, tokens, or Authorization
+ * material (see qualityRead formatters).
+ */
+function describeRest(op: string, path: string, res: RestOut): string {
+  return formatRestFailure(op, path, res);
+}
+
+function describeThrow(op: string, path: string, e: unknown): string {
+  return formatNetworkFailure(op, path, e);
 }
 
 async function main(): Promise<void> {
@@ -109,10 +123,17 @@ async function main(): Promise<void> {
   let botToken = "";
   if (wantTelegram) botToken = required("TELEGRAM_BOT_TOKEN");
 
-  const headers = { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` };
+  const headers = { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, Accept: "application/json" };
   const now = Date.now();
   const alerts: QualityAlert[] = [];
   let dbError: string | null = null;
+  const failDb = (msg: string): void => {
+    dbError = msg;
+    // One-line CI-visible diagnostic. msg carries HTTP status +
+    // PostgREST code/message + operation + query path only — never keys,
+    // tokens, or Authorization material.
+    log(`db-read FAILED ${msg}`);
+  };
 
   // ---- Heartbeats (both modes) ----
   let cronAt: number | null = null;
@@ -121,25 +142,36 @@ async function main(): Promise<void> {
   let resolverResolved = 0;
   try {
     const store = createSupabaseStateStore({ url: supabaseUrl, serviceKey });
-    const cron = (await store.loadValue("cron-monitor")) as {
-      lastRun?: { at?: unknown; lastDeliveryAt?: unknown };
-    } | null;
-    if (cron && typeof cron.lastRun?.at === "number") cronAt = cron.lastRun.at;
-    const reso = (await store.loadValue("resolve-outcomes")) as {
-      at?: unknown;
-      checked?: unknown;
-      resolved?: unknown;
-    } | null;
-    if (reso && typeof reso.at === "number") {
-      resolverAt = reso.at;
-      resolverChecked = typeof reso.checked === "number" ? reso.checked : 0;
-      resolverResolved = typeof reso.resolved === "number" ? reso.resolved : 0;
+    try {
+      const cron = (await store.loadValue("cron-monitor")) as {
+        lastRun?: { at?: unknown; lastDeliveryAt?: unknown };
+      } | null;
+      if (cron && typeof cron.lastRun?.at === "number") cronAt = cron.lastRun.at;
+    } catch (e) {
+      throw new Error(`heartbeat cron-monitor: ${e instanceof Error ? e.message : "read failed"}`);
+    }
+    try {
+      const reso = (await store.loadValue("resolve-outcomes")) as {
+        at?: unknown;
+        checked?: unknown;
+        resolved?: unknown;
+      } | null;
+      if (reso && typeof reso.at === "number") {
+        resolverAt = reso.at;
+        resolverChecked = typeof reso.checked === "number" ? reso.checked : 0;
+        resolverResolved = typeof reso.resolved === "number" ? reso.resolved : 0;
+      }
+    } catch (e) {
+      throw new Error(`heartbeat resolve-outcomes: ${e instanceof Error ? e.message : "read failed"}`);
     }
   } catch (e) {
-    dbError = e instanceof Error ? e.message : "heartbeat read failed";
+    failDb(e instanceof Error ? e.message : "heartbeat read failed");
   }
 
   // ---- Unresolved backlog + volume windows (both modes, exact counts) ----
+  // Every count is required: ANY failed/ambiguous count is DB_UNREADABLE,
+  // never a silent zero. Counts use limit=1 + Prefer: count=exact so only
+  // the Content-Range total travels (no full-table payload, no timeout).
   let total: number | null = null;
   let unresolved = 0;
   let oldestUnresolved: number | null = null;
@@ -150,40 +182,53 @@ async function main(): Promise<void> {
       const week = now - 7 * 86_400_000;
       const twoWeeks = now - 14 * 86_400_000;
       const iso = (ms: number): string => new Date(ms).toISOString();
-      const t = await rest(supabaseUrl, headers, `signal_history?select=id`, {
-        headers: { Prefer: "count=exact" },
-      });
-      total = countOf(t.contentRange);
-      const u = await rest(supabaseUrl, headers, `signal_history?outcome=is.null&select=id`, {
-        headers: { Prefer: "count=exact" },
-      });
-      unresolved = countOf(u.contentRange) ?? 0;
-      const oldest = await rest(
-        supabaseUrl,
-        headers,
-        `signal_history?outcome=is.null&select=first_seen&order=first_seen.asc&limit=1`,
-      );
-      if (oldest.status === 200 && Array.isArray(oldest.json) && oldest.json.length > 0) {
-        const ts = Date.parse(String((oldest.json[0] as { first_seen?: unknown }).first_seen ?? ""));
+      const countPath = (filter: string): string =>
+        `signal_history?${filter ? `${filter}&` : ""}select=id&limit=1`;
+      const readCount = async (op: string, path: string): Promise<number> => {
+        let res: RestOut;
+        try {
+          res = await rest(supabaseUrl, headers, path, {
+            headers: { Prefer: "count=exact" },
+          });
+        } catch (e) {
+          throw new Error(describeThrow(op, path, e));
+        }
+        try {
+          return requireCount(op, path, res);
+        } catch (e) {
+          throw new Error(e instanceof Error ? e.message : describeRest(op, path, res));
+        }
+      };
+      const totalPath = countPath("");
+      total = await readCount("history-count-total", totalPath);
+      const unresolvedPath = countPath("outcome=is.null");
+      unresolved = await readCount("history-count-unresolved", unresolvedPath);
+      const oldestPath = `signal_history?outcome=is.null&select=first_seen&order=first_seen.asc&limit=1`;
+      let oldest: RestOut;
+      try {
+        oldest = await rest(supabaseUrl, headers, oldestPath);
+      } catch (e) {
+        throw new Error(describeThrow("history-oldest-unresolved", oldestPath, e));
+      }
+      let oldestRows: unknown[];
+      try {
+        oldestRows = requireRows("history-oldest-unresolved", oldestPath, oldest);
+      } catch (e) {
+        throw new Error(e instanceof Error ? e.message : describeRest("history-oldest-unresolved", oldestPath, oldest));
+      }
+      if (oldestRows.length > 0) {
+        const ts = Date.parse(String((oldestRows[0] as { first_seen?: unknown }).first_seen ?? ""));
         if (Number.isFinite(ts)) oldestUnresolved = ts;
       }
-      const r = await rest(
-        supabaseUrl,
-        headers,
-        `signal_history?first_seen=gte.${encodeURIComponent(iso(week))}&select=id`,
-        { headers: { Prefer: "count=exact" } },
+      const recentPath = countPath(`first_seen=gte.${encodeURIComponent(iso(week))}`);
+      recent = await readCount("history-count-recent7d", recentPath);
+      const priorPath = countPath(
+        `first_seen=gte.${encodeURIComponent(iso(twoWeeks))}&first_seen=lt.${encodeURIComponent(iso(week))}`,
       );
-      recent = countOf(r.contentRange) ?? 0;
-      const p = await rest(
-        supabaseUrl,
-        headers,
-        `signal_history?first_seen=gte.${encodeURIComponent(iso(twoWeeks))}&first_seen=lt.${encodeURIComponent(iso(week))}&select=id`,
-        { headers: { Prefer: "count=exact" } },
-      );
-      prior = countOf(p.contentRange) ?? 0;
-      if (t.status !== 200) throw new Error(`history count failed (HTTP ${t.status})`);
+      prior = await readCount("history-count-prior7d", priorPath);
+      log(`db-read counts ok total=${total} unresolved=${unresolved} recent7d=${recent} prior7d=${prior}`);
     } catch (e) {
-      dbError = e instanceof Error ? e.message : "count queries failed";
+      failDb(e instanceof Error ? e.message : "count queries failed");
     }
   }
 
@@ -197,22 +242,53 @@ async function main(): Promise<void> {
     probeOk = false;
   }
 
-  // ---- Resolved rows (live mode only) ----
+  // ---- Resolved rows (live mode only, paginated) ----
+  // Same row set as before when history is small; paged reads only lift
+  // the single-response ceiling for large histories. ANY page failure is
+  // DB_UNREADABLE with rows discarded — never a silent partial/empty set.
   type Row = ReturnType<typeof mapResolvedRow>;
   let rows: NonNullable<Row>[] = [];
   let capped = false;
+  const PAGE_SIZE = 1000;
+  const MAX_ROWS = 10000;
   if (mode === "live" && !dbError) {
     try {
-      const res = await rest(supabaseUrl, headers, `signal_history?select=*&order=first_seen.asc&limit=2000`, undefined, 60_000);
-      if (res.status !== 200 || !Array.isArray(res.json)) throw new Error(`history read failed (HTTP ${res.status})`);
-      const raw = res.json as ResolvedRow[];
-      capped = raw.length >= 2000;
-      for (const r of raw) {
-        const m = mapResolvedRow(r);
-        if (m) rows.push(m);
+      let offset = 0;
+      for (;;) {
+        const path =
+          `signal_history?select=*&order=first_seen.asc` + `&limit=${PAGE_SIZE}&offset=${offset}`;
+        const op = `history-rows-offset-${offset}`;
+        let res: RestOut;
+        try {
+          res = await rest(supabaseUrl, headers, path, undefined, 60_000);
+        } catch (e) {
+          throw new Error(describeThrow(op, path, e));
+        }
+        let raw: unknown[];
+        try {
+          raw = requireRows(op, path, res);
+        } catch (e) {
+          throw new Error(e instanceof Error ? e.message : describeRest(op, path, res));
+        }
+        for (const r of raw as ResolvedRow[]) {
+          const m = mapResolvedRow(r);
+          if (m) rows.push(m);
+          if (rows.length >= MAX_ROWS) break;
+        }
+        if (rows.length >= MAX_ROWS) {
+          capped = true;
+          break;
+        }
+        if (raw.length < PAGE_SIZE) break;
+        offset += PAGE_SIZE;
+        if (offset >= MAX_ROWS) {
+          capped = true;
+          break;
+        }
       }
+      log(`db-read history ok rows=${rows.length}${capped ? " (capped)" : ""}`);
     } catch (e) {
-      dbError = e instanceof Error ? e.message : "history read failed";
+      failDb(e instanceof Error ? e.message : "history read failed");
       rows = [];
     }
   }
@@ -273,7 +349,7 @@ async function main(): Promise<void> {
       `resolver=${resolverAt ? new Date(resolverAt).toISOString() : "never"} ` +
       `(checked=${resolverChecked} resolved=${resolverResolved}); unresolved=${unresolved}; ` +
       `probe=${probeOk === null ? "n/a" : probeOk ? "ok" : "failed"}` +
-      (capped ? "; ROW CAP 2000 HIT (widen or paginate for full history)" : "") +
+      (capped ? "; ROW CAP 10000 HIT (history exceeds paged bound; widen MAX_ROWS)" : "") +
       "; retention 30d bounds 90d windows",
     status,
   });
@@ -334,6 +410,10 @@ async function main(): Promise<void> {
   writeFileSync(join(outDir, "signal-quality.json"), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(outDir, "signal-quality.md"), `${md}\n`);
   log(`status=${status} completed=${stats.completed} alerts=${alertsAll.length} → ${outDir}/`);
+  // Surface the underlying read failure in CI logs (report already
+  // carries infra.dbError for artifacts). NEVER log headers/keys/tokens:
+  // dbError is built only from HTTP status + PostgREST fields + paths.
+  if (dbError) log(`db-read FAILED ${dbError}`);
 
   // ---- Issue hook (workflow creates it via gh; runner only drafts) ----
   const qualifies =

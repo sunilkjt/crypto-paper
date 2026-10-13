@@ -68,6 +68,17 @@ export function createSupabaseStateStore(opts: {
     "Content-Type": "application/json",
   };
   const run = opts.fetchFn ?? fetch;
+  function postgrestDetail(json: unknown): string {
+    if (typeof json !== "object" || json === null || Array.isArray(json)) return "n/a";
+    const o = json as Record<string, unknown>;
+    const pick = (k: string): string | null => {
+      const v = o[k];
+      return typeof v === "string" && v.trim().length > 0 ? v.trim().slice(0, 200) : null;
+    };
+    const code = pick("code") ?? "n/a";
+    const message = pick("message") ?? "n/a";
+    return `code=${code} message=${message}`;
+  }
   async function loadValue(key: string): Promise<unknown> {
     const res = await run(
       `${base}/rest/v1/scanner_state?key=eq.${encodeURIComponent(key)}&select=value`,
@@ -77,7 +88,13 @@ export function createSupabaseStateStore(opts: {
       throw new Error("State load failed: scanner_state table missing (run migration 0003).");
     }
     if (!res.ok) {
-      throw new Error(`State load failed (HTTP ${res.status}).`);
+      let detail = "n/a";
+      try {
+        detail = postgrestDetail(await res.json());
+      } catch {
+        // body unreadable — status alone is the diagnostic
+      }
+      throw new Error(`State load failed for "${key}" (HTTP ${res.status} ${detail}).`);
     }
     const rows = (await res.json()) as Array<{ value?: unknown }>;
     return Array.isArray(rows) && rows.length > 0 ? rows[0].value : null;
@@ -92,7 +109,13 @@ export function createSupabaseStateStore(opts: {
       throw new Error("State save failed: scanner_state table missing (run migration 0003).");
     }
     if (!res.ok) {
-      throw new Error(`State save failed (HTTP ${res.status}).`);
+      let detail = "n/a";
+      try {
+        detail = postgrestDetail(await res.json());
+      } catch {
+        // body unreadable — status alone is the diagnostic
+      }
+      throw new Error(`State save failed for "${key}" (HTTP ${res.status} ${detail}).`);
     }
   }
   return {
