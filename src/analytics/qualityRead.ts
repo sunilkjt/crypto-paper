@@ -116,15 +116,23 @@ export function formatNetworkFailure(op: string, path: string, err: unknown): st
  * Require an exact-count query to succeed. Returns the count.
  * Throws a formatted Error otherwise — callers must treat the throw as
  * DB_UNREADABLE, never as zero.
+ *
+ * Accepts HTTP 200 (complete) and 206 (Partial Content): PostgREST
+ * returns 206 with a valid Content-Range total whenever the result set
+ * is truncated by limit/max-rows, which is the normal case for
+ * count=exact over a history larger than one page.
  */
 export function requireCount(op: string, path: string, res: RestSnapshot): number {
   const n = parseCount(res.contentRange);
-  if (res.status === 200 && n !== null) return n;
+  if ((res.status === 200 || res.status === 206) && n !== null) return n;
   throw new Error(formatRestFailure(op, path, res));
 }
 
-/** Require a row-list response to be HTTP 200 with an array body. */
+/**
+ * Require a row-list response with an array body. Accepts 200 and 206
+ * (paged/truncated reads return 206 with a Content-Range).
+ */
 export function requireRows(op: string, path: string, res: RestSnapshot): unknown[] {
-  if (res.status === 200 && Array.isArray(res.json)) return res.json as unknown[];
+  if ((res.status === 200 || res.status === 206) && Array.isArray(res.json)) return res.json as unknown[];
   throw new Error(formatRestFailure(op, path, res));
 }

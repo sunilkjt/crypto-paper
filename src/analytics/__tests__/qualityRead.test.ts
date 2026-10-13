@@ -105,6 +105,24 @@ describe("requireCount / requireRows", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("accepts HTTP 206 Partial Content with valid bodies", () => {
+    // PostgREST returns 206 + Content-Range total when count=exact or a
+    // row page is truncated (e.g. 1884-row history, limit=1/1000).
+    expect(
+      requireCount("total", "signal_history?select=id&limit=1", {
+        status: 206,
+        json: [{ id: "x" }],
+        contentRange: "0-0/1884",
+      }),
+    ).toBe(1884);
+    const rows = requireRows("rows", "signal_history?select=*&limit=1000", {
+      status: 206,
+      json: [{ id: "a" }, { id: "b" }],
+      contentRange: "0-999/1884",
+    });
+    expect(rows).toHaveLength(2);
+  });
+
   it("throws log-safe errors instead of returning zero/empty on failure", () => {
     // Failed count must throw — callers map this to DB_UNREADABLE, never to 0.
     expect(() =>
